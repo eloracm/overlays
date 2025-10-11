@@ -1,0 +1,87 @@
+body,
+html {
+    margin: 0;
+    overflow: hidden;
+}
+
+canvas,
+video {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+canvas,
+#map {
+    pointer-events: none;
+}
+
+#map {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 200px;
+    width: 300px;
+    z-index: 10;
+}
+
+/* Base container wraps video, map, canvas, and heart overlays */
+#overlay-container {
+    position: relative;
+    display: inline-block;
+    width: 1280px;
+    /* match video width */
+    height: 720px;
+    /* match video height */
+    overflow: hidden;
+}
+
+#overlay-container video,
+#overlay-container canvas,
+#overlay-container #map {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+#overlay-container canvas,
+#overlay-container #map {
+    pointer-events: none;
+}
+
+#overlay-container #map {
+    height: 200px;
+    width: 300px;
+    z-index: 10;
+}
+
+/* Overlay 3: Heart Rate (Right Center inside container) */
+#overlay-container #heart-rate-overlay {
+    position: absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 120px;
+    height: 120px;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    z-index: 50;
+}
+
+#overlay-container #heart-icon {
+    font-size: 48px;
+    color: #ff0000;
+    margin-bottom: 5px;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+#overlay-container #heart-rate-value {
+    font-size: 24px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+}
