@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>GoPro + GPX Overlay Video</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas,
+        video {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        canvas,
+        #map {
+            pointer-events: none;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 200px;
+            width: 300px;
+            z-index: 10;
+        }
+    </style>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+</head>
+
+<body>
+    <video id="video" src="video.mp4" width="1280" height="720" crossorigin="anonymous" controls></video>
+    <canvas id="overlay" width="1280" height="720"></canvas>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="./GPXParser.js"></script>
+    <script src="./main.js"></script>
+</body>
+
+</html>
