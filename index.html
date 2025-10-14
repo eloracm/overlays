@@ -11,11 +11,23 @@
 
 <body>
     <div id="overlay-container">
-        <video id="video" src="./data/1012.mp4" width="1280" height="720" crossorigin="anonymous" controls></video>
-        <canvas id="overlay" width="1280" height="720"></canvas>
-        <canvas id="recording-canvas" width="1280" height="720" style="display:none"></canvas>
+        <video id="video" src="./data/GX010766.mp4" width="3840" height="2160" crossorigin="anonymous" controls></video>
+        <canvas id="overlay" width="3840" height="2160"></canvas>
+        <canvas id="recording-canvas" width="3840" height="2160" style="display:none"></canvas>
 
-        <div id="map"></div>
+        <div id="map"></div> <!-- static full route -->
+        <div id="dynamic-map"></div> <!-- new moving/rotating close-up -->
+        <div id="clock-overlay"></div>
+
+        <!-- Overlay: Speedometer (upper right) -->
+        <div id="speedometer-overlay">
+            <canvas id="speedometer-canvas" width="200" height="200"></canvas>
+        </div>
+
+        <!-- Overlay: Elevation Profile (bottom center) -->
+        <div id="elevation-overlay">
+            <canvas id="elevation-canvas" width="1200" height="180"></canvas>
+        </div>
 
         <!-- Overlay 3: Heart Rate -->
         <div id="heart-rate-overlay">
@@ -26,11 +38,13 @@
     <!-- Record Button -->
     <button id="record-btn">Start Recording</button>
 
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.4/dist/ffmpeg.min.js"></script>
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="./GPXParser.js"></script>
-    <script src="./overlays.js"></script>
+    <script type="module" src="./VideoTimestamps.js"></script>
+    <script type="module" src="./overlays.js"></script>
 </body>
 
 

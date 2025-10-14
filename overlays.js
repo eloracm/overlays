@@ -1,595 +1,748 @@
-// overlays.js
-// Full overlays + recording + ffmpeg.wasm conversion to MP4
-// This file replaces the recording parts in your previous overlays.js and
-// retains your GPX/map/overlay logic.
+// overlays.js — Clean rewrite with GPX/video sync fixes, dual maps, and continuous RAF
+// Debug logging intentionally left in.
+
+import { loadVideoMeta } from './VideoTimestamps.js';
 
 (async () => {
-    // -------------------- BASIC DOM + MAP SETUP --------------------
-    const video = document.getElementById("video");
-    const canvas = document.getElementById("overlay");
-    const ctx = canvas.getContext("2d");
+    // -------------------- DOM & Canvas Setup --------------------
+    const videoEl = document.getElementById('video');
+    videoEl.addEventListener("loadedmetadata", () => {
+        initVideoTiming(videoEl.currentSrc || videoEl.src);
+    });
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
 
-    let points = [];
-    let marker;
-    let traveledLine;
-    let gpxStartMs, gpxEndMs, gpxDurationMs;
-    let maxSpeed = 0;
-    let minEle = 0, maxEle = 0;
-    let totalMiles = 0;
+    const overlayClockEl = ensureClockElement();
 
-    const map = L.map("map").setView([0, 0], 13);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+    // Display vs internal resolution (you use a 4K internal canvas mapped to display size)
+    const DISPLAY_W = 1280;
+    const DISPLAY_H = 720;
+    const INTERNAL_W = 3840;
+    const INTERNAL_H = 2160;
 
-    // After map loads or after resizing:
-    setTimeout(() => {
-        map.invalidateSize();
-        console.log("✅ Leaflet size recalculated:", document.getElementById("map").offsetWidth, "x", document.getElementById("map").offsetHeight);
-    }, 300);
+    canvas.width = INTERNAL_W;
+    canvas.height = INTERNAL_H;
+    canvas.style.width = `${DISPLAY_W}px`;
+    canvas.style.height = `${DISPLAY_H}px`;
 
-    // -------------------- GPX LOADER (your existing logic) --------------------
-    async function loadGPX(url) {
-        const res = await fetch(url);
-        const text = await res.text();
+    // Map drawing scale: we will draw using DISPLAY coords but canvas is scaled internally
+    const scaleX = INTERNAL_W / DISPLAY_W;
+    const scaleY = INTERNAL_H / DISPLAY_H;
+    ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
 
-        const parser = new GPXParser();
-        parser.parse(text);
-        const track = parser.tracks[0];
-        if (!track || !track.points || track.points.length === 0) {
-            console.error("No GPX track points found!");
-            return;
-        }
+    // small overlay canvases
+    const speedCanvas = document.getElementById('speedometer-canvas');
+    const sctx = speedCanvas.getContext('2d');
+    const eleCanvas = document.getElementById('elevation-canvas');
+    const ectx = eleCanvas.getContext('2d');
 
-        points = track.points
-            .map(p => ({
-                lat: parseFloat(p.lat),
-                lon: parseFloat(p.lon),
-                ele: parseFloat(p.ele) || 0,
-                time: p.time ? new Date(p.time) : null,
-                hr: p.heartRateBpm != null ? parseFloat(p.heartRateBpm) : null
-            }))
-            .filter(p => !isNaN(p.lat) && !isNaN(p.lon) && p.time instanceof Date && !isNaN(p.time));
+    // -------------------- State --------------------
+    let points = []; // normalized telemetry points from GPX
+    let minEle = 0, maxEle = 0, totalMiles = 0;
+    let maxSpeed = 30;
 
-        if (points.length < 2) {
-            console.error("Not enough valid GPX points with time data.");
-            return;
-        }
+    // Maps and markers
+    let map = null;           // static full route map
+    let dynMap = null;        // dynamic mini map
+    let routeLine = null;
+    let staticMarker = null;
+    let traveledLine = null;
+    let dynRoute = null;
+    let arrowMarker = null;
 
-        // Fill missing HR from previous point
-        for (let i = 1; i < points.length; i++) {
-            if (points[i].hr == null && points[i - 1].hr != null) {
-                points[i].hr = points[i - 1].hr;
-            }
-        }
+    // Sync state
+    let gpxStartMs = null;
+    let gpxEndMs = null;
+    let gpxDurationMs = null;
+    let videoDurationSec = null;
+    let gpxToVideoOffsetMs = 0; // offset to align gpx time to video time (can be tweaked)
+    let startedRAF = false;
 
-        // Compute distances, cumulative miles, speeds
-        let cumulativeDist = 0;
-        points[0].cumMiles = 0;
-        points[0].speedMph = 0;
-        for (let i = 1; i < points.length; i++) {
-            const a = points[i - 1], b = points[i];
-            const dMeters = haversineMeters(a, b);
-            const dt = (b.time - a.time) / 1000;
-            cumulativeDist += dMeters;
-            b.cumMiles = cumulativeDist / 1609.34;
-            b.speedMph = dt > 0 ? (dMeters / dt) * 2.23694 : a.speedMph;
-        }
+    // smoothing
+    let lastHeading = 0;
 
-        // Adaptive smoothing (same as your logic)
-        const smoothSpeed = (i, window) => {
-            const start = Math.max(0, i - window);
-            const end = Math.min(points.length - 1, i + window);
-            let sum = 0, count = 0;
-            for (let j = start; j <= end; j++) {
-                if (!isNaN(points[j].speedMph)) { sum += points[j].speedMph; count++; }
-            }
-            return count > 0 ? sum / count : points[i].speedMph;
-        };
-        for (let i = 0; i < points.length; i++) {
-            const s = points[i].speedMph;
-            let window = 3;
-            if (s < 5) window = 6;
-            else if (s < 10) window = 4;
-            else if (s < 20) window = 3;
-            else if (s < 30) window = 2;
-            else window = 1;
-            points[i].speedMph = smoothSpeed(i, window);
-        }
-
-        minEle = Math.min(...points.map(p => p.ele));
-        maxEle = Math.max(...points.map(p => p.ele));
-        maxSpeed = Math.ceil(Math.max(...points.map(p => p.speedMph)) / 10) * 10 || 10;
-        gpxStartMs = points[0].time.getTime();
-        gpxEndMs = points[points.length - 1].time.getTime();
-        gpxDurationMs = gpxEndMs - gpxStartMs;
-
-        // Video↔GPX time mapping
-        window.gpxSync = {
-            gpxStartMs,
-            gpxEndMs,
-            gpxDurationMs,
-            videoStartMs: 0,          // assume video t=0 aligns to gpxStartMs
-            videoEndMs: 0,            // we’ll fill this after video metadata loads
-            offsetMs: 0               // manual fine-tune if needed
-        };
-        video.addEventListener("loadedmetadata", () => {
-            window.gpxSync.videoEndMs = video.duration * 1000;
-        });
-
-        const latlngs = points.map(p => [p.lat, p.lon]);
-        L.polyline(latlngs, { color: "gray", weight: 3 }).addTo(map);
-        window.baseRoute = L.polyline(latlngs, { color: "#777", weight: 4, opacity: 0.4 }).addTo(map);
-        traveledLine = L.polyline([], { color: "blue", weight: 3 }).addTo(map);
-        map.fitBounds(latlngs);
-        marker = L.circleMarker(latlngs[0], { radius: 5, color: "red" }).addTo(map);
-
-        totalMiles = points[points.length - 1].cumMiles;
-        console.log(`Loaded ${points.length} points. Distance: ${totalMiles.toFixed(2)} mi`);
+    // start RAF immediately
+    if (!startedRAF) {
+        startedRAF = true;
+        requestAnimationFrame(rafLoop);
     }
 
+    // Trigger an immediate draw when play starts so overlays reflect current time instantly
+    videoEl.addEventListener('play', () => {
+        if (points && points.length > 1) {
+            updateMapsAndOverlaysForVideoTime(videoEl.currentTime || 0);
+        }
+    });
+
+    // Also update when video seeks (fast jump)
+    videoEl.addEventListener('seeked', () => {
+        if (points && points.length > 1) {
+            updateMapsAndOverlaysForVideoTime(videoEl.currentTime || 0);
+        }
+    });
+
+    // -------------------- RECORDING (preserve your existing behavior) --------------------
+    // Recreate recording canvas if missing and keep your current recording logic intact
+    let recordCanvas = document.getElementById('recording-canvas');
+    if (!recordCanvas) {
+        recordCanvas = document.createElement('canvas');
+        recordCanvas.id = 'recording-canvas';
+        document.body.appendChild(recordCanvas);
+    }
+    recordCanvas.width = INTERNAL_W;
+    recordCanvas.height = INTERNAL_H;
+    recordCanvas.style.display = 'none';
+    const rctx = recordCanvas.getContext('2d');
+    rctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+    const recordBtn = document.getElementById('record-btn');
+    let recorder = null, recordingStream = null, isRecording = false;
+
+    videoEl.addEventListener('ended', () => { if (isRecording) stopRecording(); });
+
+    // -------------------- STARTUP --------------------
+    // load GPX (adjust this path to your file)
+    await loadGPX('./data/GX010766_1_GPS5.gpx');
+    // Draw initial overlays at start position
+    requestAnimationFrame(() => {
+        if (points && points.length > 1) {
+            const startMs = gpxStartMs;
+            const cur = interpolatePoint(startMs);
+            if (cur) {
+                applyInterpolated(cur, startMs);
+            }
+        }
+    });
+
+    const applied = autoCorrectVideoMetaAgainstGPX(window.videoTiming);
+    if (applied !== 0) {
+        console.log(`[Overlay] Applied video->GPX time correction: ${applied} ms (${(applied / 3600000).toFixed(3)} hours)`);
+    } else {
+        console.log("[Overlay] No time correction needed.");
+    }
+
+    // if video metadata available now, set videoDurationSec to help mapping
+    videoEl.addEventListener('loadedmetadata', () => {
+        videoDurationSec = videoEl.duration;
+        console.log('Video duration (sec):', videoDurationSec);
+    });
+
+    // Expose some helpers for debugging from console
+    window._overlayDebug = {
+        points, gpxStartMs, gpxEndMs, gpxDurationMs,
+        setOffsetMs: (ms) => { gpxToVideoOffsetMs = ms; console.log('gpxToVideoOffsetMs set to', ms); },
+        forceUpdate: () => updateMapsAndOverlaysForVideoTime(videoEl.currentTime || 0)
+    };
+
+    console.log('Overlays initialized. Waiting for play or seek events to start showing live overlay.');
+
     // -------------------- HELPERS --------------------
+    async function initVideoTiming(videoUrl) {
+        console.log("[Overlay] Initializing video timing...");
+        try {
+            const meta = await loadVideoMeta(videoUrl);
+            window.videoTiming = meta;
+            console.log(`[Overlay] Video timing ready for ${meta.file}`);
+        } catch (err) {
+            console.error("[Overlay] Video timing initialization failed:", err);
+        }
+    }
+
     function haversineMeters(a, b) {
         const R = 6371000;
-        const dLat = (b.lat - a.lat) * Math.PI / 180;
-        const dLon = (b.lon - a.lon) * Math.PI / 180;
-        const lat1 = a.lat * Math.PI / 180;
-        const lat2 = b.lat * Math.PI / 180;
+        const toRad = Math.PI / 180;
+        const dLat = (b.lat - a.lat) * toRad;
+        const dLon = (b.lon - a.lon) * toRad;
+        const lat1 = a.lat * toRad;
+        const lat2 = b.lat * toRad;
         const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
         return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
     }
 
-    function getInterpolatedPoint(currentTime) {
-        if (!points || points.length < 2) return points[0];
+    function bearingBetweenDeg(a, b) {
+        const toRad = Math.PI / 180, toDeg = 180 / Math.PI;
+        const lat1 = a.lat * toRad, lat2 = b.lat * toRad;
+        const dLon = (b.lon - a.lon) * toRad;
+        const y = Math.sin(dLon) * Math.cos(lat2);
+        const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+        let brng = Math.atan2(y, x) * toDeg;
+        brng = (brng + 360) % 360;
+        return brng;
+    }
 
-        const { gpxStartMs, gpxEndMs, gpxDurationMs, offsetMs } = window.gpxSync || {};
-        const videoTimeMs = currentTime * 1000 + (offsetMs || 0);
-
-        // Map current video time → GPX time
-        const targetTime = gpxStartMs + (videoTimeMs / (video.duration * 1000)) * gpxDurationMs;
-
-        // Find the two GPX points surrounding targetTime (binary search)
+    // Binary search to find index where points[idx].time >= tMs
+    function findIndexByTime(tMs) {
+        if (!points || points.length === 0) return 0;
         let left = 0, right = points.length - 1;
-        while (left < right - 1) {
+        while (left < right) {
             const mid = (left + right) >> 1;
-            if (points[mid].time.getTime() < targetTime) left = mid;
+            if (points[mid].timeMs < tMs) left = mid + 1;
             else right = mid;
         }
+        return left;
+    }
 
-        const a = points[left];
-        const b = points[right];
-        const t1 = a.time.getTime();
-        const t2 = b.time.getTime();
+    // Interpolate to get a smooth sample for arbitrary targetTimeMs (absolute GPX time)
+    function interpolatePoint(targetTimeMs) {
+        if (!points || points.length === 0) return null;
+        if (targetTimeMs <= points[0].timeMs) {
+            return { ...points[0], idxLeft: 0, idxRight: 0, ratio: 0 };
+        }
+        if (targetTimeMs >= points[points.length - 1].timeMs) {
+            const last = points[points.length - 1];
+            return { ...last, idxLeft: points.length - 1, idxRight: points.length - 1, ratio: 0 };
+        }
 
-        if (t2 <= t1) return a; // no progress
+        let right = findIndexByTime(targetTimeMs);
+        let left = Math.max(0, right - 1);
+        const a = points[left], b = points[right];
+        if (!a || !b) return null;
 
-        const ratio = (targetTime - t1) / (t2 - t1);
-
-        // Interpolate all numeric fields
+        const t1 = a.timeMs, t2 = b.timeMs;
+        const ratio = t2 === t1 ? 0 : (targetTimeMs - t1) / (t2 - t1);
         const lerp = (v1, v2) => v1 + (v2 - v1) * ratio;
 
         return {
             lat: lerp(a.lat, b.lat),
             lon: lerp(a.lon, b.lon),
-            speed: lerp(a.speedMph, b.speedMph),
             ele: lerp(a.ele, b.ele),
-            miles: lerp(a.cumMiles, b.cumMiles)
+            speed: lerp(a.speedMph || 0, b.speedMph || 0),
+            miles: lerp(a.cumMiles || 0, b.cumMiles || 0),
+            idxLeft: left,
+            idxRight: right,
+            ratio
         };
     }
 
-    // -------------------- DRAWING FUNCTIONS (speedometer/elevation/heart text) --------------------
-    // (These mirror your original code; they remained unchanged.)
+    // -------------------- GPX LOADER & NORMALIZER --------------------
+    async function loadGPX(url) {
+        console.log('Loading GPX:', url);
+        const res = await fetch(url);
+        const xmlText = await res.text();
+        const parser = new DOMParser();
+        const xml = parser.parseFromString(xmlText, 'application/xml');
+
+        const trkpts = xml.getElementsByTagName('trkpt');
+        if (!trkpts || trkpts.length === 0) {
+            console.error('GPX: no track points found.');
+            return;
+        }
+
+        // parse trkpts into normalized points array
+        const raw = Array.from(trkpts).map(node => {
+            const lat = parseFloat(node.getAttribute('lat'));
+            const lon = parseFloat(node.getAttribute('lon'));
+            const eleNode = node.getElementsByTagName('ele')[0];
+            const timeNode = node.getElementsByTagName('time')[0];
+            const ele = eleNode ? parseFloat(eleNode.textContent) : 0;
+            const timeStr = timeNode ? timeNode.textContent : null;
+            const timeMs = timeStr ? (new Date(timeStr)).getTime() : NaN;
+            // optional HR in GPX extensions; attempt to parse common tags
+            let hr = null;
+            const hrNode = node.querySelector('gpxtpx\\:hr, hr, gpxtpx\\:hr');
+            if (hrNode) hr = parseFloat(hrNode.textContent);
+            return { lat, lon, ele, timeMs, hr };
+        }).filter(p => !isNaN(p.timeMs) && !isNaN(p.lat) && !isNaN(p.lon));
+
+        if (raw.length < 2) {
+            console.error('GPX: not enough valid points with timestamps.');
+            return;
+        }
+
+        // compute cumulative distances, speeds, etc.
+        let cumulMeters = 0;
+        raw[0].cumMiles = 0;
+        raw[0].speedMph = raw[0].speedMph || 0;
+        for (let i = 1; i < raw.length; i++) {
+            const a = raw[i - 1], b = raw[i];
+            const d = haversineMeters(a, b);
+            const dt = (b.timeMs - a.timeMs) / 1000;
+            cumulMeters += d;
+            b.cumMiles = cumulMeters / 1609.34;
+            b.speedMph = dt > 0 ? (d / dt) * 2.23694 : (a.speedMph || 0);
+            if (!b.hr && a.hr) b.hr = a.hr;
+        }
+
+        // smooth speeds (small adaptive window)
+        const smoothSpeed = (i) => {
+            const s = raw[i].speedMph || 0;
+            let window = 3;
+            if (s < 5) window = 6;
+            else if (s < 10) window = 4;
+            else if (s < 20) window = 3;
+            else if (s < 30) window = 2;
+            let sum = 0, count = 0;
+            for (let j = Math.max(0, i - window); j <= Math.min(raw.length - 1, i + window); j++) {
+                sum += (raw[j].speedMph || 0);
+                count++;
+            }
+            return count ? sum / count : s;
+        };
+        for (let i = 0; i < raw.length; i++) raw[i].speedMph = smoothSpeed(i);
+
+        // assign to global state
+        points = raw.map(p => ({
+            lat: p.lat, lon: p.lon, ele: p.ele, timeMs: p.timeMs, hr: p.hr || null,
+            cumMiles: p.cumMiles || 0, speedMph: p.speedMph || 0
+        }));
+
+        minEle = Math.min(...points.map(p => p.ele));
+        maxEle = Math.max(...points.map(p => p.ele));
+        totalMiles = points[points.length - 1].cumMiles || 0.01;
+        maxSpeed = Math.ceil(Math.max(...points.map(p => p.speedMph || 0)) / 10) * 10 || 30;
+
+        gpxStartMs = points[0].timeMs;
+        gpxEndMs = points[points.length - 1].timeMs;
+        gpxDurationMs = gpxEndMs - gpxStartMs;
+
+        console.log('GPX loaded', points.length, 'points', 'start:', new Date(gpxStartMs).toISOString(), 'end:', new Date(gpxEndMs).toISOString());
+
+        // Attempt to set videoDuration if available
+        if (videoEl && videoEl.duration && !isNaN(videoEl.duration) && isFinite(videoEl.duration)) {
+            videoDurationSec = videoEl.duration;
+        }
+
+        // initialize maps now that points exist
+        initMaps(points);
+    }
+
+    // -------------------- MAPS (static + dynamic) --------------------
+    function initMaps(trackPoints) {
+        const latlngs = trackPoints.map(p => [p.lat, p.lon]);
+        const bounds = L.latLngBounds(latlngs);
+
+        // --- dynamic resize static map container based on route aspect ---
+        const mapDiv = document.getElementById('map');
+        const latSpan = bounds.getNorth() - bounds.getSouth();
+        const lonSpan = bounds.getEast() - bounds.getWest();
+        const aspect = lonSpan === 0 ? 1 : latSpan / lonSpan;
+
+        const maxH = 250, maxW = 330;
+        let width = maxW, height = maxH;
+        if (aspect > 1) { // taller
+            height = maxH;
+            width = Math.max(180, Math.round(maxH / aspect));
+        } else {
+            width = maxW;
+            height = Math.max(140, Math.round(maxW * aspect));
+        }
+        mapDiv.style.width = `${width}px`;
+        mapDiv.style.height = `${height}px`;
+        console.log('Static map resized to', width, 'x', height);
+
+        // --- static map setup (north-up) ---
+        if (!map) {
+            map = L.map('map', { zoomSnap: 0.25, zoomDelta: 0.25, zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false });
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { detectRetina: true }).addTo(map);
+        }
+
+        if (routeLine) map.removeLayer(routeLine);
+        routeLine = L.polyline(latlngs, { color: '#666', weight: 4, opacity: 0.8 }).addTo(map);
+
+        if (staticMarker) map.removeLayer(staticMarker);
+        staticMarker = L.circleMarker(latlngs[0], { radius: 6, color: '#ffcc33', fillColor: '#ffcc33', fillOpacity: 1 }).addTo(map);
+
+        // gentle padded bounds so path doesn't hug edges
+        const padLat = (bounds.getNorth() - bounds.getSouth()) * 0.05;
+        const padLon = (bounds.getEast() - bounds.getWest()) * 0.05;
+        const padded = L.latLngBounds([bounds.getSouth() - padLat, bounds.getWest() - padLon], [bounds.getNorth() + padLat, bounds.getEast() + padLon]);
+
+        try {
+            map.fitBounds(padded, { padding: [20, 20], maxZoom: 13 });
+        } catch (e) {
+            map.setView(latlngs[0], 13);
+        }
+        setTimeout(() => { try { map.invalidateSize(); } catch (e) { } }, 200);
+
+        // --- dynamic mini map ---
+        const dynDiv = document.getElementById('dynamic-map');
+        if (!dynMap) {
+            dynMap = L.map('dynamic-map', { zoomSnap: 0.25, zoomDelta: 0.25, zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false });
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { detectRetina: true }).addTo(dynMap);
+        }
+
+        if (dynRoute) dynMap.removeLayer(dynRoute);
+        dynRoute = L.polyline(latlngs, { color: '#00bcd4', weight: 3, opacity: 0.9 }).addTo(dynMap);
+
+        // Arrow SVG (gold); we rotate the inner svg element via style transform for smooth rotation
+        const arrowHTML = `
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <polygon points="20,5 35,35 20,28 5,35" fill="#ffcc33" stroke="#e0a800" stroke-width="2"/>
+      </svg>
+    `;
+        const arrowIcon = L.divIcon({ className: 'arrow-icon', html: arrowHTML, iconSize: [40, 40], iconAnchor: [20, 20] });
+
+        if (arrowMarker) dynMap.removeLayer(arrowMarker);
+        arrowMarker = L.marker(latlngs[0], { icon: arrowIcon }).addTo(dynMap);
+
+        // traveled line on static map
+        if (traveledLine) map.removeLayer(traveledLine);
+        traveledLine = L.polyline([], { color: '#007bff', weight: 5, opacity: 0.9 }).addTo(map);
+
+        // dynMap initial view: slightly ahead of start so arrow isn't on edge
+        const quarterIdx = Math.min(latlngs.length - 1, Math.floor(latlngs.length * 0.05));
+        dynMap.setView(latlngs[quarterIdx], 17);
+        setTimeout(() => { try { dynMap.invalidateSize(); } catch (e) { } }, 200);
+
+        console.log('Maps initialized.');
+    }
+
+    // -------------------- DRAW UTILITIES --------------------
+
+    // create top-center clock element (local time)
+    function ensureClockElement() {
+        let clk = document.getElementById('clock-overlay');
+        clk.textContent = '--:--:--';
+        return clk;
+    }
+
     function drawSpeedometer(speed) {
-        const cx = canvas.width - 150;
-        const cy = 100;
+        const ctx = sctx;
+        const w = speedCanvas.width, h = speedCanvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const cx = w / 2, cy = h / 2;
         const r = 80;
         const minAngle = Math.PI, maxAngle = 2 * Math.PI;
-        const safeSpeed = Math.min(speed, maxSpeed);
-        const angle = minAngle + (safeSpeed / maxSpeed) * (maxAngle - minAngle);
+        const range = maxAngle - minAngle;
 
-        // Arc background
+        // background arc
         ctx.beginPath();
         ctx.arc(cx, cy, r, minAngle, maxAngle);
-        ctx.strokeStyle = "#333";
+        ctx.strokeStyle = '#444';
         ctx.lineWidth = 8;
         ctx.stroke();
 
-        // Tick marks
-        for (let s = 0; s <= maxSpeed; s += maxSpeed / 6) {
-            const tickAngle = minAngle + (s / maxSpeed) * (maxAngle - minAngle);
-            const x1 = cx + Math.cos(tickAngle) * (r - 8);
-            const y1 = cy + Math.sin(tickAngle) * (r - 8);
-            const x2 = cx + Math.cos(tickAngle) * r;
-            const y2 = cy + Math.sin(tickAngle) * r;
-            ctx.beginPath();
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.strokeStyle = "#888";
-            ctx.lineWidth = 2;
-            ctx.stroke();
+        // ticks
+        ctx.lineWidth = 2;
+        ctx.font = '10px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        for (let mph = 0; mph <= maxSpeed; mph += 10) {
+            const ratio = mph / maxSpeed;
+            const a = minAngle + ratio * range;
+            const x1 = cx + Math.cos(a) * (r - 4), y1 = cy + Math.sin(a) * (r - 4);
+            const x2 = cx + Math.cos(a) * (r - 12), y2 = cy + Math.sin(a) * (r - 12);
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
+            const lx = cx + Math.cos(a) * (r - 26), ly = cy + Math.sin(a) * (r - 26);
+            ctx.fillText(mph.toString(), lx, ly);
         }
 
-        // Needle
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + Math.cos(angle) * (r - 15), cy + Math.sin(angle) * (r - 15));
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.stroke();
+        const cur = Math.min(speed || 0, maxSpeed);
+        const needle = minAngle + (cur / maxSpeed) * range;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needle) * (r - 18), cy + Math.sin(needle) * (r - 18));
+        ctx.strokeStyle = 'red'; ctx.lineWidth = 3; ctx.stroke();
 
-        // Center cap
-        ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = "red";
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fillStyle = 'red'; ctx.fill();
 
-        // Speed text
-        ctx.fillStyle = "white";
-        ctx.font = "bold 24px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(`${safeSpeed.toFixed(1)} mph`, cx, cy + 50);
+        ctx.font = 'bold 20px sans-serif'; ctx.fillStyle = 'white'; ctx.fillText(`${cur.toFixed(1)} mph`, cx, cy + 50);
     }
 
-    function drawElevationProfile(currentTime) {
-        const margin = 60;
-        const chartHeight = 150;
-        const graphBottom = canvas.height - 30;
-        const graphTop = graphBottom - chartHeight;
-        const graphLeft = margin;
-        const graphRight = canvas.width - margin;
+    function drawElevation(currentTargetTimeMs) {
+        if (!points || points.length < 2) return;
+        const ctx = ectx;
+        const w = eleCanvas.width, h = eleCanvas.height;
+        ctx.clearRect(0, 0, w, h);
 
-        const totalMilesSafe = totalMiles && totalMiles > 0 ? totalMiles : 1;
-        const minEleFt = minEle * 3.28084;
-        const maxEleFt = maxEle * 3.28084;
-        const eleRangeFt = (maxEleFt - minEleFt) || 1;
+        const margin = { left: 60, right: 40, top: 20, bottom: 36 };
+        const gxL = margin.left, gxR = w - margin.right, gxT = margin.top, gxB = h - margin.bottom;
+        const graphH = gxB - gxT;
 
+        const minEleFt = minEle * 3.28084, maxEleFt = maxEle * 3.28084, eleRange = Math.max(1, maxEleFt - minEleFt);
+        const totalMilesSafe = Math.max(totalMiles, 0.01);
+
+        // filled area
         ctx.beginPath();
         for (let i = 0; i < points.length; i++) {
-            const x = graphLeft + (points[i].cumMiles / totalMilesSafe) * (graphRight - graphLeft);
-            const eleFt = points[i].ele * 3.28084;
-            const y = graphBottom - ((eleFt - minEleFt) / eleRangeFt) * chartHeight;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+            const x = gxL + (points[i].cumMiles / totalMilesSafe) * (gxR - gxL);
+            const y = gxB - ((points[i].ele * 3.28084 - minEleFt) / eleRange) * graphH;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
-        ctx.lineTo(graphRight, graphBottom);
-        ctx.lineTo(graphLeft, graphBottom);
-        ctx.closePath();
+        ctx.lineTo(gxR, gxB); ctx.lineTo(gxL, gxB); ctx.closePath();
+        ctx.fillStyle = 'rgba(0,188,212,0.22)'; ctx.fill();
 
-        ctx.fillStyle = "rgba(0,188,212,0.35)";
-        ctx.fill();
-
-        // Draw slope-colored line segments on top
+        // colored segments
         for (let i = 1; i < points.length; i++) {
-            const prev = points[i - 1], curr = points[i];
-            const distMeters = (curr.cumMiles - prev.cumMiles) * 1609.34;
-            const elevChangeMeters = curr.ele - prev.ele;
-            const slopePct = distMeters > 0 ? (elevChangeMeters / distMeters) * 100 : 0;
-
-            let color;
-            if (slopePct < -3) color = "#00ff88";
-            else if (slopePct < 1) color = "#ffff66";
-            else if (slopePct < 5) color = "#ff9933";
-            else color = "#ff3333";
-
-            const x1 = graphLeft + (prev.cumMiles / totalMilesSafe) * (graphRight - graphLeft);
-            const y1 = graphBottom - (((prev.ele * 3.28084) - minEleFt) / eleRangeFt) * chartHeight;
-            const x2 = graphLeft + (curr.cumMiles / totalMilesSafe) * (graphRight - graphLeft);
-            const y2 = graphBottom - (((curr.ele * 3.28084) - minEleFt) / eleRangeFt) * chartHeight;
-
-            ctx.beginPath();
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            const p0 = points[i - 1], p1 = points[i];
+            const distM = (p1.cumMiles - p0.cumMiles) * 1609.34;
+            const elevDelta = p1.ele - p0.ele;
+            const slope = distM > 0 ? (elevDelta / distM) * 100 : 0;
+            let color = '#ffff66';
+            if (slope < -3) color = '#00ff88';
+            else if (slope < 1) color = '#ffff66';
+            else if (slope < 5) color = '#ff9933';
+            else color = '#ff3333';
+            const x1 = gxL + (p0.cumMiles / totalMilesSafe) * (gxR - gxL);
+            const y1 = gxB - ((p0.ele * 3.28084 - minEleFt) / eleRange) * graphH;
+            const x2 = gxL + (p1.cumMiles / totalMilesSafe) * (gxR - gxL);
+            const y2 = gxB - ((p1.ele * 3.28084 - minEleFt) / eleRange) * graphH;
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
         }
 
-        // Axes & ticks (keeps your original implementation)
-        ctx.strokeStyle = "#999";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(graphLeft, graphBottom);
-        ctx.lineTo(graphRight, graphBottom);
-        ctx.moveTo(graphLeft, graphBottom);
-        ctx.lineTo(graphLeft, graphTop);
-        ctx.stroke();
+        // axes & ticks
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(gxL, gxB); ctx.lineTo(gxR, gxB); ctx.lineTo(gxR, gxT); ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
 
-        ctx.fillStyle = "#ccc";
-        ctx.font = "12px sans-serif";
-        ctx.textAlign = "center";
         const xTicks = 5;
         for (let i = 0; i <= xTicks; i++) {
             const ratio = i / xTicks;
-            const x = graphLeft + ratio * (graphRight - graphLeft);
-            const miles = totalMilesSafe * ratio;
-            ctx.beginPath();
-            ctx.moveTo(x, graphBottom);
-            ctx.lineTo(x, graphBottom + 5);
-            ctx.stroke();
-            ctx.fillText(miles.toFixed(1), x, graphBottom + 18);
+            const x = gxL + ratio * (gxR - gxL);
+            const miles = (totalMilesSafe * ratio);
+            ctx.beginPath(); ctx.moveTo(x, gxB); ctx.lineTo(x, gxB + 4); ctx.stroke();
+            ctx.fillText(miles.toFixed(1), x, gxB + 16);
         }
-        ctx.textAlign = "right";
-        ctx.fillText("Distance (mi)", graphRight, graphBottom + 35);
 
-        ctx.textAlign = "right";
-        ctx.textBaseline = "middle";
+        // Y ticks
+        ctx.textAlign = 'right';
         const yTicks = 5;
         for (let i = 0; i <= yTicks; i++) {
             const ratio = i / yTicks;
-            const y = graphBottom - ratio * chartHeight;
-            const eleFt = minEleFt + ratio * (maxEleFt - minEleFt);
-            ctx.beginPath();
-            ctx.moveTo(graphLeft - 5, y);
-            ctx.lineTo(graphLeft, y);
-            ctx.stroke();
-            ctx.fillText(Math.round(eleFt), graphLeft - 10, y);
+            const y = gxB - ratio * graphH;
+            const eleFt = Math.round(minEleFt + ratio * eleRange);
+            ctx.beginPath(); ctx.moveTo(gxL - 4, y); ctx.lineTo(gxL, y); ctx.stroke();
+            ctx.fillText(eleFt, gxL - 8, y + 4);
         }
-        ctx.textBaseline = "bottom";
-        ctx.fillText("Elevation (ft)", graphLeft + 10, graphTop - 10);
 
-        // Progress marker and tooltip
-        const p = getInterpolatedPoint(currentTime);
-        const markerX = graphLeft + (p.miles / totalMilesSafe) * (graphRight - graphLeft);
-        const markerY = graphBottom - (((p.ele * 3.28084) - minEleFt) / eleRangeFt) * chartHeight;
-        ctx.beginPath();
-        ctx.arc(markerX, markerY, 5, 0, 2 * Math.PI);
-        ctx.fillStyle = "red";
-        ctx.fill();
+        // current marker
+        const cur = interpolatePoint(currentTargetTimeMs);
+        if (cur) {
+            const markerX = gxL + (cur.miles / totalMilesSafe) * (gxR - gxL);
+            const markerY = gxB - ((cur.ele * 3.28084 - minEleFt) / eleRange) * graphH;
+            ctx.beginPath(); ctx.arc(markerX, markerY, 5, 0, Math.PI * 2); ctx.fillStyle = 'red'; ctx.fill();
+            ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = 'white';
+            ctx.fillText(`${Math.round(cur.ele * 3.28084)} ft`, markerX, markerY - 10);
+            // debug
+            // console.log('elevationProfile: (markerX, markerY) =', markerX, markerY);
+        }
+    }
 
-        let currentSlopePct = 0;
-        for (let i = 1; i < points.length; i++) {
-            if (p.miles >= points[i - 1].cumMiles && p.miles <= points[i].cumMiles) {
-                const distMeters = (points[i].cumMiles - points[i - 1].cumMiles) * 1609.34;
-                const elevChangeMeters = points[i].ele - points[i - 1].ele;
-                currentSlopePct = distMeters > 0 ? (elevChangeMeters / distMeters) * 100 : 0;
-                break;
+    function updateHeartRate(currentTargetTimeMs) {
+        if (!points || points.length === 0) return;
+        // find nearest point
+        const idx = findIndexByTime(currentTargetTimeMs);
+        const chosen = points[Math.max(0, idx - 1)];
+        const hrVal = chosen && chosen.hr ? Math.round(chosen.hr) : null;
+        const el = document.getElementById('heart-rate-value');
+        if (el) el.textContent = hrVal ? `${hrVal} BPM` : '--';
+    }
+
+    // If a large mismatch between video timestamps and GPX times exists,
+    // automatically compute and apply an offset to the loaded video meta.
+    // Returns applied offset in ms (can be 0).
+    function autoCorrectVideoMetaAgainstGPX(meta) {
+        if (!meta || !meta.frameTimesMs || !meta.frameTimesMs.length) return 0;
+        if (!gpxStartMs || !gpxEndMs) return 0;
+
+        // Use the first non-NaN frame time as representative
+        const firstFrameMs = meta.frameTimesMs.find(t => Number.isFinite(t));
+        if (!firstFrameMs) return 0;
+
+        // Compute difference: positive => GPX is later than video by delta ms
+        const deltaMs = gpxStartMs - firstFrameMs;
+
+        console.log(`[AutoCorrect] deltaMs between GPX start and first video frame: ${deltaMs} ms`);
+
+        // If absolute delta is small, consider already aligned
+        const THRESHOLD_MS = 3 * 3600 * 1000; // 3 hours default threshold
+        if (Math.abs(deltaMs) < THRESHOLD_MS) {
+            console.log("[AutoCorrect] Delta within threshold; no correction applied.");
+            return 0;
+        }
+
+        // If delta is large, apply correction by shifting video metadata timestamps by delta.
+        // This assumes the entire video timeline should be shifted by delta to align with GPX.
+        console.warn(`[AutoCorrect] Large delta detected (${(deltaMs / 3600000).toFixed(2)} h). Applying correction of ${deltaMs} ms to video metadata.`);
+
+        // Apply correction in-place
+        meta.creationMs = (meta.creationMs || 0) + deltaMs;
+        if (Array.isArray(meta.frameTimesMs)) {
+            meta.frameTimesMs = meta.frameTimesMs.map(t => (Number.isFinite(t) ? t + deltaMs : t));
+        }
+
+        // Return applied value for logging or further adjustments
+        return deltaMs;
+    }
+
+    // --- Helper: format elapsed seconds as HH:MM:SS.mmm ---
+    function formatElapsedSeconds(sec) {
+        if (!isFinite(sec)) sec = 0;
+        const hours = Math.floor(sec / 3600);
+        const minutes = Math.floor((sec % 3600) / 60);
+        const seconds = Math.floor(sec % 60);
+        if (hours > 0) {
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+        return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    // --- Updated clock: show mapped video timestamp (local) or elapsed fallback ---
+    function updateClock() {
+        try {
+            // Prefer the mapped absolute timestamp (based on creation_time + PTS)
+            let vtsDate = null;
+            try {
+                vtsDate = getCurrentVideoTimestamp(); // expected to return a Date or null
+            } catch (e) {
+                // keep vtsDate null and fallback below
+                console.warn('[Overlay] getCurrentVideoTimestamp() threw:', e);
+                vtsDate = null;
+            }
+
+            if (vtsDate instanceof Date && !isNaN(vtsDate.getTime())) {
+                // Show local time derived from the video's mapped timestamp
+                // Example format: "14:40:45.123" (local)
+                const hh = String(vtsDate.getHours()).padStart(2, '0');
+                const mm = String(vtsDate.getMinutes()).padStart(2, '0');
+                const ss = String(vtsDate.getSeconds()).padStart(2, '0');
+                const ms = String(vtsDate.getMilliseconds()).padStart(3, '0');
+                overlayClockEl.textContent = `${hh}:${mm}:${ss}.${ms}`;
+            } else {
+                // Fallback: show video elapsed time (currentTime) as HH:MM:SS.mmm
+                const elapsed = (videoEl && typeof videoEl.currentTime === 'number') ? videoEl.currentTime : 0;
+                overlayClockEl.textContent = formatElapsedSeconds(elapsed);
+            }
+        } catch (err) {
+            // swallow errors to avoid spamming console during RAF
+            // keep the element stable (do nothing)
+        }
+    }
+
+    // -------------------- UNIFIED DRAW/UPDATE --------------------
+    function updateMapsAndOverlaysForVideoTime() {
+        if (!points || points.length < 2) return;
+
+        const videoTimestamp = getCurrentVideoTimestamp();
+        if (!videoTimestamp) return;
+
+        const targetTimeMs = videoTimestamp.getTime();
+        const clampedTimeMs = Math.min(Math.max(targetTimeMs, gpxStartMs), gpxEndMs);
+        const cur = interpolatePoint(clampedTimeMs);
+        if (!cur) return;
+
+        applyInterpolated(cur, clampedTimeMs);
+    }
+
+
+    function applyInterpolated(cur, targetTimeMs) {
+        // --- Static map marker ---
+        if (staticMarker && cur.lat && cur.lon)
+            staticMarker.setLatLng([cur.lat, cur.lon]);
+
+        // --- Dynamic map + heading arrow ---
+        if (arrowMarker && dynMap) {
+            arrowMarker.setLatLng([cur.lat, cur.lon]);
+            dynMap.panTo([cur.lat, cur.lon], { animate: false });
+
+            // Compute heading between neighbor points
+            const leftIdx = Math.max(0, cur.idxLeft || 0);
+            const rightIdx = Math.min(points.length - 1, cur.idxRight || leftIdx);
+            const prev = points[leftIdx], next = points[rightIdx];
+            let heading = 0;
+            if (prev && next) heading = bearingBetweenDeg(prev, next);
+
+            // Smooth heading transitions
+            const alpha = 0.15;
+            let d = ((heading - lastHeading + 540) % 360) - 180;
+            lastHeading = (lastHeading + alpha * d + 360) % 360;
+
+            const el = arrowMarker.getElement();
+            if (el) {
+                const svg = el.querySelector('svg');
+                if (svg) {
+                    svg.style.transform = `rotate(${lastHeading}deg)`;
+                    svg.style.transformOrigin = '20px 20px';
+                }
             }
         }
 
-        const tooltipText = `Elevation: ${Math.round(p.ele * 3.28084)} ft   Slope: ${currentSlopePct >= 0 ? "+" : ""}${currentSlopePct.toFixed(1)}%`;
-        ctx.font = "14px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        const textWidth = ctx.measureText(tooltipText).width + 12;
-        const tooltipX = Math.min(Math.max(markerX, graphLeft + textWidth / 2), graphRight - textWidth / 2);
-        const tooltipY = markerY - 15;
-        ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect(tooltipX - textWidth / 2, tooltipY - 22, textWidth, 22);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(tooltipText, tooltipX, tooltipY - 5);
+        // --- Traveled polyline on static map ---
+        if (map && routeLine && traveledLine) {
+            const cutoffIndex = Math.min(points.length - 1, (cur.idxRight || 0));
+            const traveledLatLngs = points.slice(0, cutoffIndex + 1).map(p => [p.lat, p.lon]);
+            traveledLine.setLatLngs(traveledLatLngs);
+        }
+
+        // --- Overlays ---
+        const interpTimeMs =
+            (cur && cur.idxLeft !== undefined)
+                ? points[cur.idxLeft].timeMs +
+                (points[cur.idxRight].timeMs - points[cur.idxLeft].timeMs) * cur.ratio
+                : gpxStartMs;
+
+        drawSpeedometer(cur.speed || 0);
+        drawElevation(interpTimeMs);
+        updateHeartRate(interpTimeMs);
     }
 
-    function updateHeartRateOverlay(currentTime) {
-        if (!points || points.length < 2) return;
+    function getCurrentVideoTimestamp() {
+        const meta = window.videoTiming;
+        if (!meta) return null;
 
-        const targetTime = gpxStartMs + (currentTime / video.duration) * gpxDurationMs;
-        let closest = points[0];
-        let minDiff = Infinity;
-        for (const p of points) {
-            const diff = Math.abs(p.time - targetTime);
-            if (diff < minDiff) { minDiff = diff; closest = p; }
+        // Normalize creationMs if missing
+        if (!meta.creationMs && meta.creation_time) {
+            meta.creationMs = new Date(meta.creation_time).getTime();
         }
-        const hr = closest.hr ? Math.round(closest.hr) : null;
-        const hrEl = document.getElementById("heart-rate-value");
-        if (hrEl) { hrEl.textContent = hr ? `${hr} BPM` : "--"; }
+        if (!meta.creationMs || isNaN(meta.creationMs)) {
+            console.warn("[Overlay] Missing creationMs; using fallback epoch");
+            meta.creationMs = Date.now() - videoEl.currentTime * 1000;
+        }
+
+        const t = videoEl.currentTime;
+        return new Date(meta.creationMs + t * 1000);
     }
 
     // -------------------- ANIMATION LOOP --------------------
-    function drawOverlay(currentTime) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (!points || points.length < 2) return;
+    function rafLoop() {
+        // update running clock each frame (fast; cheap)
+        updateClock();
 
-        const point = getInterpolatedPoint(currentTime);
-        const lat = point.lat, lon = point.lon;
-        if (marker) marker.setLatLng([lat, lon]);
-
-        // Compute GPX time equivalent of current video time
-        const targetTime = gpxStartMs + (currentTime / video.duration) * gpxDurationMs;
-
-        // --- Binary search to find cutoff index (fast) ---
-        let left = 0;
-        let right = points.length - 1;
-        while (left < right) {
-            const mid = Math.floor((left + right) / 2);
-            if (points[mid].time.getTime() < targetTime) {
-                left = mid + 1;
-            } else {
-                right = mid;
+        // Only update when video and GPX are ready
+        if (videoEl && points && points.length > 1 && gpxStartMs) {
+            try {
+                updateMapsAndOverlaysForVideoTime(); // no argument needed
+            } catch (err) {
+                console.error('Error during overlay update:', err);
             }
         }
-        const cutoffIndex = Math.max(2, left);
-
-        // --- Initialize routes and marker if not yet created ---
-        if (!window._baseRoute) {
-            const latlngs = points.map(p => [p.lat, p.lon]);
-            window._baseRoute = L.polyline(latlngs, {
-                color: "#666",
-                weight: 4,
-                opacity: 0.4,
-                lineCap: "round"
-            }).addTo(map);
-            window._traveledRoute = L.polyline([], {
-                color: "#007bff",
-                weight: 6,
-                opacity: 0.9,
-                lineCap: "round"
-            }).addTo(map);
-            window._positionMarker = L.circleMarker([lat, lon], {
-                radius: 6,
-                color: "#ff3333",
-                fillColor: "#ff3333",
-                fillOpacity: 1,
-                weight: 2,
-                opacity: 1,
-                className: "position-marker"
-            }).addTo(map);
-        }
-
-        // --- Update traveled line and position marker ---
-        const traveledLatLngs = points.slice(0, cutoffIndex).map(p => [p.lat, p.lon]);
-        window._traveledRoute.setLatLngs(traveledLatLngs);
-
-        if (window._positionMarker) {
-            window._positionMarker.setLatLng([lat, lon]);
-        }
-
-        // --- Optional: visual glow on current position marker ---
-        const el = document.querySelector(".position-marker");
-        if (el) el.style.filter = "drop-shadow(0 0 6px rgba(255,0,0,0.8))";
-
-        updateHeartRateOverlay(currentTime);
-        drawSpeedometer(point.speed);
-        drawElevationProfile(currentTime);
+        requestAnimationFrame(rafLoop);
     }
-
-    video.addEventListener("timeupdate", () => drawOverlay(video.currentTime));
-    video.addEventListener("play", function loop() {
-        if (!video.paused && !video.ended) {
-            drawOverlay(video.currentTime);
-            requestAnimationFrame(loop.bind(this));
-        }
-    });
-
-    // -------------------- RECORDING + CONVERSION --------------------
-    // Ensure a hidden recording canvas exists (create if missing)
-    let recordCanvas = document.getElementById("recording-canvas");
-    if (!recordCanvas) {
-        recordCanvas = document.createElement("canvas");
-        recordCanvas.id = "recording-canvas";
-        recordCanvas.width = canvas.width || video.videoWidth || 1280;
-        recordCanvas.height = canvas.height || video.videoHeight || 720;
-        recordCanvas.style.display = "none";
-        document.body.appendChild(recordCanvas);
-    } else {
-        // ensure size matches main canvas/video
-        recordCanvas.width = canvas.width || video.videoWidth || recordCanvas.width;
-        recordCanvas.height = canvas.height || video.videoHeight || recordCanvas.height;
-    }
-    const rctx = recordCanvas.getContext("2d");
-
-    const recordBtn = document.getElementById("record-btn");
-
-    // ffmpeg.wasm state
-    let ffmpeg = null;
-    let ffmpegLoaded = false;
-    let ffmpegLoading = false;
-
-    async function ensureFFmpeg() {
-        if (ffmpegLoaded) return;
-        if (ffmpegLoading) {
-            // wait until loaded by another call
-            while (!ffmpegLoaded) await new Promise(r => setTimeout(r, 200));
-            return;
-        }
-        ffmpegLoading = true;
-        console.log("⏳ Loading ffmpeg.wasm (this may take a few seconds)...");
-        try {
-            const mod = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.5/+esm");
-            const { createFFmpeg, fetchFile } = mod;
-            ffmpeg = createFFmpeg({ log: true, corePath: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.5/dist/ffmpeg-core.js" });
-            await ffmpeg.load();
-            ffmpeg.fetchFile = fetchFile; // convenience
-            ffmpegLoaded = true;
-            console.log("✅ ffmpeg.wasm loaded");
-        } catch (err) {
-            console.error("❌ Failed to load ffmpeg.wasm:", err);
-            ffmpegLoaded = false;
-        } finally {
-            ffmpegLoading = false;
-        }
-    }
-
-    let recorder = null;
-    let recordingStream = null;
-    let isRecording = false;
 
     async function startRecording() {
-        if (isRecording) return; // ✅ Prevent re-entry
+        if (isRecording) return;
         isRecording = true;
-
-        const video = document.getElementById("video");
-        video.pause(); // ⏸️ Pause before prompt
-
+        videoEl.pause();
         try {
-            console.log("🟢 Requesting display media...");
-            recordingStream = await navigator.mediaDevices.getDisplayMedia({
-                video: { frameRate: 30 },
-                audio: false
-            });
-
+            recordingStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
             const chunks = [];
-            recorder = new MediaRecorder(recordingStream, {
-                mimeType: "video/webm; codecs=vp9"
-            });
-
+            recorder = new MediaRecorder(recordingStream, { mimeType: 'video/webm; codecs=vp9' });
             recorder.ondataavailable = e => chunks.push(e.data);
             recorder.onstop = async () => {
-                const blob = new Blob(chunks, { type: "video/webm" });
+                const blob = new Blob(chunks, { type: 'video/webm' });
                 const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "overlay_recording.webm";
-                a.click();
+                const a = document.createElement('a');
+                a.href = url; a.download = 'overlay_recording.webm'; a.click();
                 URL.revokeObjectURL(url);
-                console.log("✅ Recording saved.");
-
-                // 🔴 Cleanup
                 recordingStream.getTracks().forEach(t => t.stop());
                 isRecording = false;
                 recorder = null;
                 recordingStream = null;
             };
-
             recorder.start();
-            console.log("🎥 Recording started.");
-            video.play(); // ▶️ Resume after permission granted
-
-            const recordBtn = document.getElementById("record-btn");
-            recordBtn.textContent = "Stop Recording";
-            recordBtn.classList.add("recording");
-
-            recordBtn.onclick = stopRecording;
+            videoEl.play();
+            if (recordBtn) { recordBtn.textContent = 'Stop Recording'; recordBtn.classList.add('recording'); recordBtn.onclick = stopRecording; }
         } catch (err) {
-            console.error("❌ Screen capture failed:", err);
+            console.error('Screen capture failed', err);
             isRecording = false;
-            video.play(); // Resume anyway
+            videoEl.play();
         }
     }
+    function stopRecording() { if (!recorder) return; recorder.stop(); }
 
-    function stopRecording() {
-        if (!recorder || !isRecording) return;
-        console.log("🛑 Stopping recording...");
-        recorder.stop();
-    }
-
-    // -------------------- wire up UI and auto-record behavior --------------------
     if (recordBtn) {
         recordBtn.addEventListener('click', () => {
-            if (isRecording) stopRecording();
-            else startRecording();
+            if (isRecording) stopRecording(); else startRecording();
         });
     }
 
-    // Auto-start recording when video plays, auto-stop when it ends
-    video.addEventListener('play', () => {
-        // if (!isRecording) startRecording();
-    });
-    video.addEventListener('ended', () => {
-        if (isRecording) stopRecording();
-    });
-
-    // Ensure html2canvas exists (we use it for DOM heart overlay snapshot)
-    if (!window.html2canvas) {
-        console.warn("html2canvas not found — include html2canvas if you want the DOM heart overlay to be composited into the recording.");
-    }
-
-    // -------------------- Start by loading GPX --------------------
-    loadGPX('./data/2025-10-12 Cycling.gpx');
-
-    // expose some helpers for debugging if needed
-    window._overlayRecording = {
-        startRecording,
-        stopRecording,
-        ensureFFmpeg,
-        isRecording: () => isRecording
-    };
-
-})(); // end async iife
+})();

@@ -1,3 +1,4 @@
+/* overlays.css (dual-map + arrow marker) */
 body,
 html {
     margin: 0;
@@ -16,42 +17,70 @@ canvas,
     pointer-events: none;
 }
 
+/* Static entire-route map (centered vertically on left) */
 #map {
     position: absolute;
-    bottom: 20px;
+    top: 20px;
     left: 20px;
     width: 330px;
     height: 250px;
-    border-radius: 8px;
+    border-radius: 10px;
     overflow: hidden;
     z-index: 10;
-    /* keeps it non-interactive over video */
+    background: rgba(0, 0, 0, 0.2);
+}
+
+/* Dynamic zoomed-in map (upper left corner) */
+#dynamic-map {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 220px;
+    height: 220px;
+    border-radius: 10px;
+    overflow: hidden;
+    z-index: 15;
+    background: rgba(0, 0, 0, 0.3);
+    transform-origin: center;
+    backdrop-filter: blur(4px);
+}
+
+.arrow-icon {
+    transform-origin: center;
 }
 
 .leaflet-control-attribution {
     display: none !important;
+    background: transparent;
 }
 
-/* Base container wraps video, map, canvas, and heart overlays */
+#overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 20;
+    pointer-events: none;
+}
+
 #overlay-container {
     position: relative;
     display: inline-block;
     width: 1280px;
-    /* match video width */
     height: 720px;
-    /* match video height */
     overflow: hidden;
 }
 
 #overlay-container video,
-#overlay-container canvas,
-#overlay-container #map {
+#overlay-container canvas {
     position: absolute;
     top: 0;
     left: 0;
+    width: 100%;
+    height: 100%;
 }
 
-/* Overlay 3: Heart Rate (Right Center inside container) */
 #overlay-container #heart-rate-overlay {
     position: absolute;
     right: 20px;
@@ -99,4 +128,59 @@ canvas,
 
 #record-btn.recording {
     background: #4caf50;
+}
+
+#heart-rate-overlay {
+    z-index: 30;
+}
+
+#speedometer-overlay {
+    position: absolute;
+    top: 40%;
+    left: 20px;
+    width: 200px;
+    height: 200px;
+    z-index: 40;
+    background: rgba(80, 80, 80, 0.25);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+}
+
+#elevation-overlay {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1200px;
+    height: 180px;
+    z-index: 40;
+    background: rgba(80, 80, 80, 0.25);
+    border-radius: 12px;
+    padding: 6px;
+    backdrop-filter: blur(4px);
+}
+
+#elevation-overlay canvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* Clock overlay (top center) */
+#clock-overlay {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: white;
+    font-size: 24px;
+    font-weight: bold;
+    text-shadow: 2px 2px 6px rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    padding: 6px 12px;
+    z-index: 60;
+    backdrop-filter: blur(4px);
 }
