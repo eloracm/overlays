@@ -11,8 +11,8 @@ export class SpeedometerOverlay {
         this.canvas.height = 2160;
 
         Object.assign(this.canvas.style, {
-            width: (opts.width || 200) + "px",
-            height: (opts.height || 200) + "px",
+            width: (opts.width || 240) + "px",
+            height: (opts.height || 150) + "px",
             position: "absolute",
             left: "50%",
             top: "20px",
@@ -31,87 +31,85 @@ export class SpeedometerOverlay {
         if (!point) return;
         const mph = typeof point.speedMph === "number" ? point.speedMph : 0;
         this.displayedSpeed += (mph - this.displayedSpeed) * this.smoothFactor;
-        this._drawSpeedometer(this.displayedSpeed);
+        this._drawArcGauge(this.displayedSpeed);
     }
 
-    _drawSpeedometer(speed) {
+    _drawArcGauge(speed) {
         const ctx = this.ctx;
-        const W = this.canvas.width;
-        const H = this.canvas.height;
-
+        const W = this.canvas.width, H = this.canvas.height;
         ctx.clearRect(0, 0, W, H);
 
-        // === scale drawing to match CSS display size ===
         const cssW = parseFloat(this.canvas.style.width);
         const cssH = parseFloat(this.canvas.style.height);
-        const scaleX = W / cssW;
-        const scaleY = H / cssH;
+        const scale = W / cssW;
         ctx.save();
-        ctx.scale(scaleX, scaleY);
+        ctx.scale(scale, scale);
 
-        const w = cssW;
-        const h = cssH;
-
+        const w = cssW, h = cssH;
         const cx = w / 2;
-        const cy = h / 2;
-        const r = h * 0.35;
+        const cy = h * (2 / 3);          // about one-third up from bottom
+        const r = w * 0.375;             // 75% of width ⇒ radius = 0.75 w / 2
         const minAngle = Math.PI;
         const maxAngle = 2 * Math.PI;
         const range = maxAngle - minAngle;
 
-        // background arc
+        // Background arc
         ctx.beginPath();
         ctx.arc(cx, cy, r, minAngle, maxAngle);
         ctx.strokeStyle = "#444";
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 14;
+        ctx.lineCap = "round";
         ctx.stroke();
 
-        // ticks + labels
+        // Foreground (speed) arc
+        const cur = Math.min(Math.max(speed, 0), this.maxSpeed);
+        const endAngle = minAngle + (cur / this.maxSpeed) * range;
+        const grad = ctx.createLinearGradient(cx - r, cy, cx + r, cy);
+        grad.addColorStop(0.0, "#00b4ff");
+        grad.addColorStop(0.45, "#00ff88");
+        grad.addColorStop(0.8, "#ffd24d");
+        grad.addColorStop(1.0, "#ff6b6b");
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, minAngle, endAngle);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 14;
+        ctx.lineCap = "round";
+        ctx.stroke();
+
+        // Tick marks & labels
         ctx.lineWidth = 2;
         ctx.font = `${Math.round(r * 0.18)}px sans-serif`;
         ctx.fillStyle = "#fff";
         ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
 
-        for (let mph = 0; mph <= this.maxSpeed; mph += 10) {
+        for (let mph = 0; mph <= this.maxSpeed; mph += 5) {
             const ratio = mph / this.maxSpeed;
             const a = minAngle + ratio * range;
-            const x1 = cx + Math.cos(a) * (r - 4);
-            const y1 = cy + Math.sin(a) * (r - 4);
-            const x2 = cx + Math.cos(a) * (r - 12);
-            const y2 = cy + Math.sin(a) * (r - 12);
+            const x1 = cx + Math.cos(a) * (r + 2);
+            const y1 = cy + Math.sin(a) * (r + 2);
+            const x2 = cx + Math.cos(a) * (r - 10);
+            const y2 = cy + Math.sin(a) * (r - 10);
             ctx.beginPath();
             ctx.moveTo(x1, y1);
             ctx.lineTo(x2, y2);
-            ctx.strokeStyle = "rgba(255,255,255,0.85)";
+            ctx.strokeStyle = "rgba(255,255,255,0.6)";
             ctx.stroke();
 
-            const lx = cx + Math.cos(a) * (r - 26);
-            const ly = cy + Math.sin(a) * (r - 26);
+            // label every tick
+            const lx = cx + Math.cos(a) * (r - 24);
+            const ly = cy + Math.sin(a) * (r - 24);
             ctx.fillText(mph.toString(), lx, ly);
         }
 
-        // clamp + draw needle
-        const cur = Math.min(Math.max(speed, 0), this.maxSpeed);
-        const needleAngle = minAngle + (cur / this.maxSpeed) * range;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + Math.cos(needleAngle) * (r - 18),
-            cy + Math.sin(needleAngle) * (r - 18));
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // center hub
-        ctx.beginPath();
-        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-        ctx.fillStyle = "red";
-        ctx.fill();
-
-        // text
-        ctx.font = `bold ${Math.round(r * 0.3)}px sans-serif`;
+        // Speed text — moved upward into the arc
+        const textY = cy - r * 0.25;
+        ctx.font = `bold ${Math.round(r * 0.35)}px sans-serif`;
         ctx.fillStyle = "white";
-        ctx.textAlign = "center";
-        ctx.fillText(`${cur.toFixed(1)} mph`, cx, cy + r * 0.6);
+        ctx.fillText(`${cur.toFixed(1)}`, cx, textY);
+        ctx.font = `bold ${Math.round(r * 0.22)}px sans-serif`;
+        ctx.fillText("mph", cx, textY + r * 0.30);
 
         ctx.restore();
     }

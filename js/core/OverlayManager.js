@@ -45,8 +45,11 @@ export class OverlayManager {
 
         // Dynamic overlays
         const speedometer = new SpeedometerOverlay(this.overlayContainer, {
-            width: 200, height: 200
+            width: 240,
+            height: 150,
+            maxMph: this.gpxManager.suggestedMaxMph || 40
         }, this.gpxManager, this.videoManager);
+
 
         const heartRate = new HeartRateOverlay(this.overlayContainer, {
             width: 200, height: 200,
