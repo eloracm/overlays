@@ -6,22 +6,18 @@ export class MapStaticOverlay {
         const coords = this.gpxManager.points.map(p => [p.lat, p.lon]);
         if (coords.length < 2) return;
 
-        // Compute bounding box
+        // Map setup
         const lats = coords.map(c => c[0]);
         const lons = coords.map(c => c[1]);
         const latSpan = Math.max(...lats) - Math.min(...lats);
         const lonSpan = Math.max(...lons) - Math.min(...lons);
-
-        // Determine map shape based on route orientation
         const isVertical = latSpan > lonSpan;
 
-        // Set size dynamically (container is positioned in CSS)
         const width = isVertical ? 220 : 330;
         const height = isVertical ? 330 : 220;
         this.container.style.width = `${width}px`;
         this.container.style.height = `${height}px`;
 
-        // Initialize Leaflet map
         this.map = L.map(this.container, {
             zoomControl: false,
             attributionControl: false,
@@ -31,37 +27,33 @@ export class MapStaticOverlay {
             boxZoom: false,
             keyboard: false,
             tap: false,
-            zoomSnap: 0.1,
-            zoomDelta: 0.1,
-            zoom: 15,
         });
 
-        // MapTiler Streets base layer
         L.tileLayer(
             'https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=JuhguwTa9FSypu7pKgm9',
             {
                 tileSize: 512,
                 zoomOffset: -1,
                 attribution:
-                    '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
+                    '&copy; <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors',
             }
         ).addTo(this.map);
 
-        // Full route (dark gray)
+        // Full (dark gray) route
         this.routeFull = L.polyline(coords, {
             color: "#444",
             weight: 4,
-            opacity: 0.7,
+            opacity: 0.8,
         }).addTo(this.map);
 
-        // Traveled route (medium blue)
+        // Traveled (blue) route starts empty
         this.routeTraveled = L.polyline([], {
             color: "#3A9BDC",
             weight: 4,
-            opacity: 0.9,
+            opacity: 1.0,
         }).addTo(this.map);
 
-        // Current position marker (red circle with white outline)
+        // Current marker
         this.currentMarker = L.circleMarker(coords[0], {
             radius: 7,
             color: "#fff",
@@ -70,23 +62,37 @@ export class MapStaticOverlay {
             weight: 2,
         }).addTo(this.map);
 
-        // Fit the map to bounds with a small padding
         this.map.fitBounds(this.routeFull.getBounds(), { padding: [10, 10] });
+
+        this.started = false;
     }
 
-    update(currentPoint) {
+    update(currentPoint, _) {
         if (!currentPoint) return;
-
         const pts = this.gpxManager.points;
-        let idx = pts.findIndex(p => p.time >= currentPoint.time);
-        if (idx < 0) idx = pts.length - 1;
+        if (!pts?.length) return;
 
+        const { timeMs } = currentPoint;
+        const startMs = this.gpxManager.startMs;
+        const endMs = this.gpxManager.endMs;
+
+        // Clamp ratio between 0 and 1
+        const ratio = Math.min(1, Math.max(0, (timeMs - startMs) / (endMs - startMs)));
+        const idx = Math.floor(ratio * (pts.length - 1));
+
+        // If we're before the start, clear the blue path
+        if (ratio <= 0) {
+            this.routeTraveled.setLatLngs([]);
+            this.currentMarker.setLatLng([pts[0].lat, pts[0].lon]);
+            return;
+        }
+
+        // Otherwise, draw traveled section up to current index
         const traveledCoords = pts.slice(0, idx + 1).map(p => [p.lat, p.lon]);
         this.routeTraveled.setLatLngs(traveledCoords);
 
+        // Move marker
         const { lat, lon } = currentPoint;
-        if (lat && lon) {
-            this.currentMarker.setLatLng([lat, lon]);
-        }
+        if (lat && lon) this.currentMarker.setLatLng([lat, lon]);
     }
 }

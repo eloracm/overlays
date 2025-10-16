@@ -45,9 +45,9 @@ export class OverlayManager {
 
         // Dynamic overlays
         const speedometer = new SpeedometerOverlay(this.overlayContainer, {
-            width: 200, height: 200,
-            left: "40px", top: "50%", transform: "translateY(-50%)"
-        });
+            width: 200, height: 200
+        }, this.gpxManager, this.videoManager);
+
         const heartRate = new HeartRateOverlay(this.overlayContainer, {
             width: 200, height: 200,
             right: "40px", top: "50%", transform: "translateY(-50%)"
@@ -92,7 +92,7 @@ export class OverlayManager {
         const formatted = this.videoManager.getVideoTimeFormatted();
 
         for (const overlay of this.overlays) {
-            try { overlay.update(point, formatted, targetMs); }
+            try { overlay.update(point, targetMs); }
             catch (err) { console.warn(`[OverlayManager] ${overlay.constructor.name} failed:`, err); }
         }
 
