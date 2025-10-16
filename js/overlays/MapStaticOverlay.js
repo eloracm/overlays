@@ -1,80 +1,92 @@
-// /js/overlays/MapStaticOverlay.js
 export class MapStaticOverlay {
-    constructor(containerId, gpxManager) {
-        this.container = document.getElementById(containerId);
+    constructor(id, gpxManager) {
         this.gpxManager = gpxManager;
-        this.map = null;
-        this.routeLine = null;
-        this.traveledLine = null;
+        this.container = document.getElementById(id);
 
-        this._initMap();
-    }
+        const coords = this.gpxManager.points.map(p => [p.lat, p.lon]);
+        if (coords.length < 2) return;
 
-    _initMap() {
-        if (!this.container) {
-            console.error("[MapStaticOverlay] Missing container element");
-            return;
-        }
+        // Compute bounding box
+        const lats = coords.map(c => c[0]);
+        const lons = coords.map(c => c[1]);
+        const latSpan = Math.max(...lats) - Math.min(...lats);
+        const lonSpan = Math.max(...lons) - Math.min(...lons);
 
-        // Create the Leaflet map
+        // Determine map shape based on route orientation
+        const isVertical = latSpan > lonSpan;
+
+        // Set size dynamically (container is positioned in CSS)
+        const width = isVertical ? 220 : 330;
+        const height = isVertical ? 330 : 220;
+        this.container.style.width = `${width}px`;
+        this.container.style.height = `${height}px`;
+
+        // Initialize Leaflet map
         this.map = L.map(this.container, {
-            attributionControl: false,
             zoomControl: false,
+            attributionControl: false,
             dragging: false,
             scrollWheelZoom: false,
             doubleClickZoom: false,
             boxZoom: false,
             keyboard: false,
+            tap: false,
             zoomSnap: 0.1,
             zoomDelta: 0.1,
-            inertia: false,
+            zoom: 15,
         });
 
-        // ✅ Add base map tiles (this was missing earlier)
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
+        // MapTiler Streets base layer
+        L.tileLayer(
+            'https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=JuhguwTa9FSypu7pKgm9',
+            {
+                tileSize: 512,
+                zoomOffset: -1,
+                attribution:
+                    '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
+            }
+        ).addTo(this.map);
+
+        // Full route (dark gray)
+        this.routeFull = L.polyline(coords, {
+            color: "#444",
+            weight: 4,
+            opacity: 0.7,
         }).addTo(this.map);
 
-        // ✅ Initialize GPX route
-        const points = this.gpxManager?.points || [];
-        if (points.length > 1) {
-            const latlngs = points.map(p => [p.lat, p.lon]);
-            this.routeLine = L.polyline(latlngs, {
-                color: "#FFD700",
-                weight: 3,
-                opacity: 0.8,
-            }).addTo(this.map);
+        // Traveled route (medium blue)
+        this.routeTraveled = L.polyline([], {
+            color: "#3A9BDC",
+            weight: 4,
+            opacity: 0.9,
+        }).addTo(this.map);
 
-            this.traveledLine = L.polyline([], {
-                color: "#00FFAA",
-                weight: 4,
-                opacity: 0.9,
-            }).addTo(this.map);
+        // Current position marker (red circle with white outline)
+        this.currentMarker = L.circleMarker(coords[0], {
+            radius: 7,
+            color: "#fff",
+            fillColor: "#FF3030",
+            fillOpacity: 1.0,
+            weight: 2,
+        }).addTo(this.map);
 
-            this.map.fitBounds(this.routeLine.getBounds());
-        }
-
-        // ✅ Fix rendering bug: ensure the map resizes correctly
-        setTimeout(() => this.map.invalidateSize(), 250);
-
-        // ✅ Apply background styling
-        this.container.style.background = "rgba(80,80,80,0.35)";
-        this.container.style.borderRadius = "12px";
-        this.container.style.overflow = "hidden";
-        this.container.style.zIndex = 2;
+        // Fit the map to bounds with a small padding
+        this.map.fitBounds(this.routeFull.getBounds(), { padding: [10, 10] });
     }
 
-    update(currentPoint, _) {
-        if (!this.map || !this.gpxManager || !currentPoint) return;
+    update(currentPoint) {
+        if (!currentPoint) return;
 
-        const points = this.gpxManager.points;
-        if (!points || points.length < 2) return;
+        const pts = this.gpxManager.points;
+        let idx = pts.findIndex(p => p.time >= currentPoint.time);
+        if (idx < 0) idx = pts.length - 1;
 
-        const cutoffIndex = Math.min(points.length - 1, currentPoint.idxRight || 0);
-        const traveledLatLngs = points.slice(0, cutoffIndex + 1).map(p => [p.lat, p.lon]);
+        const traveledCoords = pts.slice(0, idx + 1).map(p => [p.lat, p.lon]);
+        this.routeTraveled.setLatLngs(traveledCoords);
 
-        if (this.traveledLine) {
-            this.traveledLine.setLatLngs(traveledLatLngs);
+        const { lat, lon } = currentPoint;
+        if (lat && lon) {
+            this.currentMarker.setLatLng([lat, lon]);
         }
     }
 }

@@ -16,7 +16,13 @@ export class MapDynamicOverlay {
 
         const routeCoords = gpxManager.points.map(p => [p.lat, p.lon]);
         if (routeCoords.length > 1) {
-            this.routeLine = L.polyline(routeCoords, { color: '#FFD700', weight: 3 }).addTo(this.map);
+            this.routeLine = L.polyline(routeCoords,
+                {
+                    color: '#3CB371',
+                    weight: 4,
+                    opacity: 1
+                }
+            ).addTo(this.map);
             this.map.fitBounds(this.routeLine.getBounds());
         }
 
@@ -25,7 +31,16 @@ export class MapDynamicOverlay {
 
     init(startLat, startLon) {
         this.map.setView([startLat, startLon], 16);
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(this.map);
+        // MapTiler Streets base layer
+        L.tileLayer(
+            'https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=JuhguwTa9FSypu7pKgm9',
+            {
+                tileSize: 512,
+                zoomOffset: -1,
+                attribution:
+                    '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
+            }
+        ).addTo(this.map);
 
         const arrowSvg = `
             <svg width="40" height="40" viewBox="0 0 40 40">

@@ -59,36 +59,43 @@ export class OverlayManager {
 
     /** Main loop */
     start() {
+        // Force initial render before playback starts
+        const initialPoint = this.gpxManager.points?.[0];
+        if (initialPoint) {
+            this.overlays.forEach(o => {
+                if (typeof o.update === "function") {
+                    o.update(initialPoint, initialPoint.time);
+                }
+            });
+        }
+
         if (!this.videoEl) return;
         const tick = () => {
             if (!this.videoEl.paused && !this.videoEl.ended) {
                 const t = this.videoEl.currentTime;
                 this._updateOverlays(t);
-                this._updateVideoClock(t);
             }
             requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
     }
 
-    _updateVideoClock(videoTimeSec) {
-        if (!this.videoTimeDisplay) return;
-        const s = Math.floor(videoTimeSec);
-        if (s !== this.lastDisplayedSecond) {
-            this.lastDisplayedSecond = s;
-            const meta = this.videoManager.getVideoMeta?.();
-            const creationTimeMs = meta?.creation_time_ms || 0;
-            const currentTime = new Date(creationTimeMs + videoTimeSec * 1000);
-            this.videoTimeDisplay.textContent = currentTime.toLocaleTimeString([], { hour12: false });
-        }
-    }
+    _updateOverlays() {
+        // ask VideoManager for the canonical absolute timestamp (ms)
+        const targetMs = this.videoManager.getCurrentVideoTimestampMs();
+        if (!targetMs) return;
 
-    _updateOverlays(videoTimeSec) {
-        const point = this.gpxManager.getInterpolatedPoint(videoTimeSec);
-        const timeMs = this.videoManager.getVideoTimeFormatted();
+        // interpolate telemetry for that absolute time
+        const point = this.gpxManager.getInterpolatedPoint(targetMs);
+
+        // formatted time shown in UI (derived from same canonical timestamp)
+        const formatted = this.videoManager.getVideoTimeFormatted();
+
         for (const overlay of this.overlays) {
-            try { overlay.update(point, timeMs, videoTimeSec); }
+            try { overlay.update(point, formatted, targetMs); }
             catch (err) { console.warn(`[OverlayManager] ${overlay.constructor.name} failed:`, err); }
         }
+
+        this.videoTimeDisplay.textContent = formatted;
     }
 }
