@@ -101,14 +101,6 @@ export class MapStaticOverlay {
         const traveledCoords = pts.slice(0, idx + 1).map(p => [p.lat, p.lon]);
         this.routeTraveled.setLatLngs(traveledCoords);
 
-        // // Interpolate marker position between pts[idx] and pts[idx+1]
-        // const a = pts[idx];
-        // const b = pts[idx + 1] || a;
-        // const t = (timeMs - a.time) / (b.time - a.time || 1);
-        // const interpLat = a.lat + (b.lat - a.lat) * Math.max(0, Math.min(1, t));
-        // const interpLon = a.lon + (b.lon - a.lon) * Math.max(0, Math.min(1, t));
-        // this.currentMarker.setLatLng([interpLat, interpLon]);
-
         // Move marker
         const { lat, lon } = currentPoint;
         if (lat && lon) this.currentMarker.setLatLng([lat, lon]);
