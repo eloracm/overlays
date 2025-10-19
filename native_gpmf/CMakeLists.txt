@@ -17,9 +17,6 @@ include_directories(${PROJECT_SOURCE_DIR}/gpmf-parser/nlohmann)  # adjust if you
 # -------------------------------------------------------------------
 set(SOURCES
     main.cpp
-    src/GPMFExtractor.cpp
-    src/GPMFCombiner.cpp
-    src/GPMFWriter.cpp
     gpmf-parser/GPMF_parser.c
     gpmf-parser/GPMF_utils.c
     gpmf-parser/demo/GPMF_mp4reader.c
