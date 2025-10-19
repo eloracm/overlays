@@ -69,27 +69,45 @@ export class MapStaticOverlay {
 
     update(currentPoint, _) {
         if (!currentPoint) return;
+
         const pts = this.gpxManager.points;
         if (!pts?.length) return;
 
-        const { timeMs } = currentPoint;
+        const timeMs = currentPoint.timeMs;
         const startMs = this.gpxManager.startMs;
         const endMs = this.gpxManager.endMs;
 
-        // Clamp ratio between 0 and 1
-        const ratio = Math.min(1, Math.max(0, (timeMs - startMs) / (endMs - startMs)));
-        const idx = Math.floor(ratio * (pts.length - 1));
-
-        // If we're before the start, clear the blue path
-        if (ratio <= 0) {
+        // If we're before the first valid timestamp, show only the marker at the start
+        if (timeMs < startMs) {
             this.routeTraveled.setLatLngs([]);
             this.currentMarker.setLatLng([pts[0].lat, pts[0].lon]);
             return;
         }
 
-        // Otherwise, draw traveled section up to current index
+        // If we're past the end, draw full blue route
+        if (timeMs >= endMs) {
+            this.routeTraveled.setLatLngs(pts.map(p => [p.lat, p.lon]));
+            this.currentMarker.setLatLng([pts[pts.length - 1].lat, pts[pts.length - 1].lon]);
+            return;
+        }
+
+        // Find the index of the last GPX point whose time <= current time
+        let idx = pts.findIndex(p => p.time > timeMs);
+        if (idx > 0) {
+            idx -= 1;
+        }
+
+        // Draw traveled section up to current index
         const traveledCoords = pts.slice(0, idx + 1).map(p => [p.lat, p.lon]);
         this.routeTraveled.setLatLngs(traveledCoords);
+
+        // // Interpolate marker position between pts[idx] and pts[idx+1]
+        // const a = pts[idx];
+        // const b = pts[idx + 1] || a;
+        // const t = (timeMs - a.time) / (b.time - a.time || 1);
+        // const interpLat = a.lat + (b.lat - a.lat) * Math.max(0, Math.min(1, t));
+        // const interpLon = a.lon + (b.lon - a.lon) * Math.max(0, Math.min(1, t));
+        // this.currentMarker.setLatLng([interpLat, interpLon]);
 
         // Move marker
         const { lat, lon } = currentPoint;

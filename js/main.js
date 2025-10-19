@@ -14,17 +14,18 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     // Load telemetry and video metadata
     const gpxManager = new GPXManager();
-    await gpxManager.load("data/GX010766_trimmed.gpx");
+    await gpxManager.load("data/GX010766_gpmf_gps.gpx");
 
     const videoElement = document.getElementById("video");
     const videoManager = new VideoManager(videoElement);
-    await videoManager.loadMetadata("data/GX010766_meta.json");
+    await videoManager.loadMetadata("data/GX010766_gpmf_meta.json");
 
     // 🔹 Compute and apply offset between video and GPX
     const videoStartMs = videoManager.creationTime.getTime();
     const gpxStartMs = gpxManager.startMs;
     // gpxManager.videoToGpxOffsetMs = computeTimeOffset(videoStartMs, gpxStartMs);
-    gpxManager.videoToGpxOffsetMs = 63000;
+    // gpxManager.videoToGpxOffsetMs = 63000;
+    gpxManager.videoToGpxOffsetMs = 500;
 
     console.log(
         `[main] Computed videoToGpxOffsetMs = ${gpxManager.videoToGpxOffsetMs} ms`
@@ -35,7 +36,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     await overlayManager.init();
     overlayManager.start();
 
-    videoElement.addEventListener("play", () => overlayManager.start());
-    videoElement.addEventListener("pause", () => overlayManager.stop());
-    videoElement.addEventListener("seeked", () => overlayManager.start());
+    // ▶️ Handle play/pause properly
+    videoElement.addEventListener("play", () => {
+        console.log("[Video] Playing");
+    });
+    videoElement.addEventListener("pause", () => {
+        console.log("[Video] Paused");
+    });
 });

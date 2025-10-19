@@ -16,6 +16,17 @@ export class OverlayManager {
         this.videoTimeDisplay = document.getElementById("videoTimeDisplay");
         this.lastDisplayedSecond = -1;
 
+
+        // 🕓 When user scrubs or jumps in video
+        this.videoEl.addEventListener("seeked", () => {
+            console.log("[Video] Seeked to", this.videoEl.currentTime);
+            this._updateOverlays();
+        });
+
+        // 🔁 During playback, update overlays continuously
+        this.videoEl.addEventListener("timeupdate", () => {
+            this._updateOverlays();
+        });
         this._setupHiDPIScaling();
     }
 
@@ -32,6 +43,7 @@ export class OverlayManager {
         });
         this.overlayContainer.dataset.internalWidth = internalW;
         this.overlayContainer.dataset.internalHeight = internalH;
+
     }
 
     /** Initialize overlays — static DOM ones + dynamic overlays */
@@ -72,33 +84,49 @@ export class OverlayManager {
             });
         }
 
-        if (!this.videoEl) return;
-        const tick = () => {
-            if (!this.videoEl.paused && !this.videoEl.ended) {
-                const t = this.videoEl.currentTime;
-                this._updateOverlays(t);
-            }
-            requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
+        // if (!this.videoEl) return;
+        // const tick = () => {
+        //     if (!this.videoEl.paused && !this.videoEl.ended) {
+        //         const t = this.videoEl.currentTime;
+        //         this._updateOverlays(t);
+        //     }
+        //     requestAnimationFrame(tick);
+        // };
+        // requestAnimationFrame(tick);
     }
 
     _updateOverlays() {
-        // ask VideoManager for the canonical absolute timestamp (ms)
         const targetMs = this.videoManager.getCurrentVideoTimestampMs();
-        if (!targetMs) return;
 
-        // interpolate telemetry for that absolute time
-        const point = this.gpxManager.getInterpolatedPoint(targetMs);
-
-        // formatted time shown in UI (derived from same canonical timestamp)
+        if (!targetMs) {
+            console.debug("[OverlayManager] No targetMs yet (videoManager returned null/0)");
+            return;
+        }
         const formatted = this.videoManager.getVideoTimeFormatted();
 
+        // Get first and last GPX timestamps for reference
+        const gpxStart = this.gpxManager.getStartTimestampMs?.() ?? 0;
+        const gpxEnd = this.gpxManager.getEndTimestampMs?.() ?? 0;
+
+        console.debug(`[OverlayManager] targeTime = ${formatted} (${targetMs}), GPX range=${gpxStart}–${gpxEnd}`);
+
+        const point = this.gpxManager.getInterpolatedPoint(targetMs);
+        if (!point) {
+            console.debug(`[OverlayManager] No telemetry point found for ${targetMs} ms`);
+        } else {
+            console.debug(`[OverlayManager] Found telemetry point at ${point.timeMs || "unknown time"}`);
+        }
+
         for (const overlay of this.overlays) {
-            try { overlay.update(point, targetMs); }
-            catch (err) { console.warn(`[OverlayManager] ${overlay.constructor.name} failed:`, err); }
+            try {
+                console.debug(`[OverlayManager] Updating overlay ${overlay.constructor.name} at ${targetMs}`);
+                overlay.update(point, targetMs);
+            } catch (err) {
+                console.warn(`[OverlayManager] ${overlay.constructor.name} failed:`, err);
+            }
         }
 
         this.videoTimeDisplay.textContent = formatted;
     }
+
 }

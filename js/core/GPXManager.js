@@ -31,8 +31,30 @@ export class GPXManager {
             return;
         }
 
-        this.startMs = this.points[0].time;
-        this.endMs = this.points[this.points.length - 1].time;
+        // Find the first point that has a valid timestamp
+        const firstValidIndex = this.points.findIndex(pt => !isNaN(pt.time) && isFinite(pt.time));
+        if (firstValidIndex > 0) {
+            console.warn(`[GPXManager] Skipping ${firstValidIndex} points without timestamps.`);
+            this.points = this.points.slice(firstValidIndex);
+        }
+
+        // Find the last valid timestamp (in case some at end are invalid)
+        let lastValidIndex = this.points.length - 1;
+        while (lastValidIndex >= 0 && (isNaN(this.points[lastValidIndex].time) || !isFinite(this.points[lastValidIndex].time))) {
+            lastValidIndex--;
+        }
+        if (lastValidIndex < this.points.length - 1) {
+            console.warn(`[GPXManager] Trimming ${this.points.length - 1 - lastValidIndex} points without timestamps at end.`);
+            this.points = this.points.slice(0, lastValidIndex + 1);
+        }
+
+        // Verify again that we still have enough points
+        if (this.points.length < 2) {
+            console.warn('[GPXManager] Not enough valid timestamped points after trimming.');
+            return;
+        }
+        this.startMs = this.points[firstValidIndex].time;
+        this.endMs = this.points[lastValidIndex].time;
 
         // === compute cumulative miles using adjacent segments (true path length) ===
         let cumMiles = 0;
