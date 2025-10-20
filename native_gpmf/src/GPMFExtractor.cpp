@@ -85,41 +85,8 @@ GPMFResult extractGPMFData(const std::string &filename)
                     if (GPMF_OK == GPMF_FindNext(&sub, STR2FOURCC("GPSU"), GPMF_RECURSE_LEVELS))
                     {
                         extractGPSU(&sub, gpsu_epoch, gpsu_iso);
-                        // --- Determine creation_time ---
-                        std::string creation_time_iso = GetMP4CreationTimeISO(filename);
-                        double creation_epoch = isoToEpoch(creation_time_iso);
-
-                        // --- GPS sanity correction using creation_time ---
-                        if (!gpsu_epochs.empty())
-                        {
-                            double gps_epoch_first = gpsu_epochs.front();
-
-                            // If GPS epoch looks older than creation by > 1 year → fix it
-                            if (gps_epoch_first + 31536000.0 < creation_epoch)
-                            {
-                                double delta = creation_epoch - gps_epoch_first;
-                                std::cerr << "[WARN] GPSU timestamps appear invalid ("
-                                          << format_iso_from_epoch(gps_epoch_first)
-                                          << "); applying +" << delta << " sec correction.\n";
-
-                                for (auto &t : gpsu_epochs)
-                                    t += delta;
-
-                                for (auto &p : gps_points)
-                                {
-                                    if (!p.iso_time.empty())
-                                    {
-                                        double old_epoch = isoToEpoch(p.iso_time);
-                                        p.iso_time = format_iso_from_epoch(old_epoch + delta);
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // no GPSU times found — fallback to file's creation time
-                            gpsu_epochs.push_back(creation_epoch);
-                        }
+                        if (gpsu_epoch != 0)
+                            gpsu_epochs.push_back(gpsu_epoch);
                         if (first_gpsu_iso.empty())
                             first_gpsu_iso = format_iso_from_epoch(gpsu_epoch);
                     }
