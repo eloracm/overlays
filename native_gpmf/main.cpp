@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
 
         // ✅ Combine and write results
         std::cout << "[INFO] Combining telemetry data...\n";
-        GPMFResult merged = combiner.combineResults(results);
+        GPMFResult merged = combiner.combineResults(results, (std::filesystem::path(folder) / "merged.mp4").string());
 
         std::string metaFile = (std::filesystem::path(folder) / "merged_gpmf_meta.json").string();
         std::string gpxFile = (std::filesystem::path(folder) / "merged_gpmf_gps.gpx").string();

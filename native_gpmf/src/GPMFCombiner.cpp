@@ -1,5 +1,7 @@
 #include "GPMFCombiner.h"
 #include <sstream>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <algorithm>
 #include <iostream>
@@ -23,121 +25,159 @@ static std::string epochToIso(double epoch)
     return iso_out.str();
 }
 
+void mergeVideos(const std::vector<GPMFResult> &results, const std::string &outputPath)
+{
+    // Derive folder path from outputPath
+    std::filesystem::path outPath(outputPath);
+    std::filesystem::path folder = outPath.parent_path();
+    if (folder.empty())
+        folder = std::filesystem::current_path();
+
+    std::filesystem::path listFile = folder / "concat_list.txt";
+    std::ofstream out(listFile);
+
+    if (!out)
+    {
+        std::cerr << "[ERROR] Unable to write concat_list.txt\n";
+        return;
+    }
+
+    // Write files in the same order used for telemetry merging
+    for (const auto &res : results)
+    {
+        out << "file '" << res.source_filename << "'\n";
+    }
+
+    out.close();
+
+    std::string command =
+        "ffmpeg -y -f concat -safe 0 -i \"" + listFile.string() + "\" -c copy \"" + outputPath + "\"";
+
+    std::cout << "[INFO] Combining videos into " << outputPath << " using command '" + command + "'\n";
+    int ret = std::system(command.c_str());
+
+    if (ret != 0)
+        std::cerr << "[ERROR] ffmpeg failed with code " << ret << "\n";
+    else
+        std::cout << "[INFO] Combined video written to " << outputPath << "\n";
+}
+
 // ------------------------------------------------------------
 // Combine multiple GPMFResult objects into one continuous dataset
 // ------------------------------------------------------------
-GPMFResult GPMFCombiner::combineResults(const std::vector<GPMFResult> &input)
+GPMFResult GPMFCombiner::combineResults(const std::vector<GPMFResult> &resultsInput, std::string mp4filename)
 {
-    GPMFResult merged;
+    GPMFResult empty;
+    if (resultsInput.empty())
+        return empty;
 
-    if (input.empty())
+    // Work on a local copy (we will mutate gps arrays when trimming invalid samples)
+    std::vector<GPMFResult> results = resultsInput;
+
+    // --- 1) Detect internal bad-gps jumps (2015 → real time) and trim
+    //    We treat a "huge" jump as year-sized by default, but you can lower it.
+    const double JUMP_THRESHOLD = 31556952.0; // 1 year (seconds)
+    for (auto &clip : results)
     {
-        std::cerr << "[WARN] combineResults(): no input results.\n";
-        return merged;
-    }
+        if (clip.gpsu_epochs.empty())
+            continue;
 
-    // Copy and normalize creation times
-    std::vector<GPMFResult> results = input;
-
-    // --- Sanity check and fallback for each clip ---
-    for (size_t i = 0; i < results.size(); ++i)
-    {
-        auto &clip = results[i];
-        double clip_start = isoToEpoch(clip.creation_time_iso);
-        double gps_first = !clip.gpsu_epochs.empty() ? clip.gpsu_epochs.front() : 0.0;
-
-        bool badTime = false;
-        if (clip_start == 0.0)
-            badTime = true;
-        else if (gps_first > 0.0 && std::fabs(clip_start - gps_first) > 86400.0 * 365)
-            badTime = true; // over a year off
-
-        if (badTime)
+        size_t jump_index = SIZE_MAX;
+        for (size_t j = 1; j < clip.gpsu_epochs.size(); ++j)
         {
-            if (gps_first > 0.0)
+            double delta = clip.gpsu_epochs[j] - clip.gpsu_epochs[j - 1];
+            if (delta > JUMP_THRESHOLD)
             {
-                clip.creation_time_iso = epochToIso(gps_first);
-                std::cerr << "[WARN] " << i + 1
-                          << ": creation_time invalid; using GPSU "
-                          << clip.creation_time_iso << "\n";
+                jump_index = j;
+                double good_epoch = clip.gpsu_epochs[j];
+                clip.creation_time_iso = epochToIso(good_epoch);
+                std::cerr << "[WARN] " << clip.source_filename
+                          << ": detected large GPSU jump (" << delta / 3600.0
+                          << " h). Trimming first " << j << " samples and resetting creation_time to "
+                          << clip.creation_time_iso << ".\n";
+                break;
             }
-            else
-            {
-                std::cerr << "[WARN] " << i + 1
-                          << ": no creation_time or GPSU available, using epoch 0\n";
-                clip.creation_time_iso = "1970-01-01T00:00:00";
-            }
+        }
+
+        if (jump_index != SIZE_MAX)
+        {
+            // Remove earlier (invalid) gpsu epochs and gps_points to keep arrays aligned.
+            if (jump_index < clip.gpsu_epochs.size())
+                clip.gpsu_epochs.erase(clip.gpsu_epochs.begin(), clip.gpsu_epochs.begin() + jump_index);
+
+            if (jump_index < clip.gps_points.size())
+                clip.gps_points.erase(clip.gps_points.begin(), clip.gps_points.begin() + jump_index);
         }
     }
 
-    // --- Sort by creation time, tie-breaking by filename ---
+    // --- 2) Sort clips by creation_time (chronological order) ---
     std::sort(results.begin(), results.end(),
               [](const GPMFResult &a, const GPMFResult &b)
               {
-                  if (a.creation_time_iso == b.creation_time_iso)
-                      return a.source_filename < b.source_filename; // GX01 < GX02
-                  return a.creation_time_iso < b.creation_time_iso;
+                  return isoToEpoch(a.creation_time_iso) < isoToEpoch(b.creation_time_iso);
               });
 
+    // --- 3) Prepare merged result and base start epoch ---
+    GPMFResult merged;
+    merged.source_filename = "merged";
     merged.creation_time_iso = results.front().creation_time_iso;
 
-    double base_epoch = isoToEpoch(results.front().creation_time_iso);
-    double accumulated_offset = 0.0;
+    double base_start_epoch = isoToEpoch(results.front().creation_time_iso);
 
-    std::cerr << "[INFO] Combining " << results.size() << " clips...\n";
+    merged.pts_times.clear();
+    merged.gpsu_epochs.clear();
+    merged.gps_points.clear();
 
+    // --- 4) For each clip, compute absolute shift = clip_start_epoch - base_start_epoch
+    //           then convert per-clip pts_times -> merged timeline, append gpsu_epochs & gps_points
     for (size_t i = 0; i < results.size(); ++i)
     {
-        const auto &clip = results[i];
-        double clip_start_epoch = isoToEpoch(clip.creation_time_iso);
-        double time_shift = accumulated_offset;
+        const GPMFResult &clip = results[i];
 
-        // Calculate duration for offset chaining
+        double clip_start_epoch = isoToEpoch(clip.creation_time_iso);
+        double shift_seconds = clip_start_epoch - base_start_epoch; // seconds from base
+
+        // Determine clip duration from pts_times (last element) if available
         double clip_duration = 0.0;
         if (!clip.pts_times.empty())
-            clip_duration = clip.pts_times.back() - clip.pts_times.front();
-        else if (!clip.gpsu_epochs.empty())
-            clip_duration = clip.gpsu_epochs.back() - clip.gpsu_epochs.front();
+            clip_duration = clip.pts_times.back();
 
-        if (i > 0)
-            accumulated_offset += clip_duration;
-
-        std::cerr << "[INFO] Clip " << i + 1 << " "
-                  << "(" << clip.source_filename << ") "
-                  << "start=" << clip.creation_time_iso
-                  << " shift=" << time_shift
+        std::cerr << "[INFO] Clip " << (i + 1) << " (" << clip.source_filename
+                  << ") start=" << clip.creation_time_iso
+                  << " shift=" << shift_seconds
                   << " dur=" << clip_duration << "s\n";
 
-        // ---- Merge PTS ----
+        // Convert per-clip pts_times to merged timeline: pts_local + shift_seconds
         for (double t : clip.pts_times)
-            merged.pts_times.push_back(t + time_shift);
-
-        // ---- Merge GPSU epochs ----
-        for (double e : clip.gpsu_epochs)
-            merged.gpsu_epochs.push_back(e + time_shift);
-
-        // ---- Merge GPS points ----
-        for (auto p : clip.gps_points)
         {
-            if (!p.iso_time.empty())
-            {
-                double epoch = isoToEpoch(p.iso_time);
-                epoch += time_shift;
-                p.iso_time = epochToIso(epoch);
-            }
+            double merged_t = t + shift_seconds;
+            merged.pts_times.push_back(merged_t);
+        }
+
+        // For gpsu_epochs:
+        // - These are stored as absolute epoch seconds in extractor.
+        // - We append them as-is (absolute epochs). If you prefer relative seconds
+        //   since base_start, convert: gpsu_epoch - base_start_epoch.
+        for (double e : clip.gpsu_epochs)
+        {
+            merged.gpsu_epochs.push_back(e);
+        }
+
+        // GPS points: keep the actual geo records (lat/lon/ele/time string).
+        for (const auto &p : clip.gps_points)
+        {
             merged.gps_points.push_back(p);
         }
     }
 
-    // ---- Derive merged time bounds ----
-    if (!merged.pts_times.empty())
-    {
-        merged.startMs = merged.pts_times.front() * 1000.0;
-        merged.endMs = merged.pts_times.back() * 1000.0;
-    }
+    // Optionally: sort merged gps_points by time to ensure monotonic order (if needed)
+    // If gps_points.iso_time are ISO strings, you'd convert -> epoch and sort by epoch.
+    // Here, we assume concatenation order is chronological after the above shifts/trims.
+    //
+    // If you want to guarantee ordering:
+    //   convert each gps_point.iso_time -> epoch and sort merged.gps_points accordingly.
 
-    std::cerr << "[INFO] Combined telemetry from "
-              << results.size() << " clips into unified timeline.\n";
+    mergeVideos(results, mp4filename);
 
     return merged;
 }

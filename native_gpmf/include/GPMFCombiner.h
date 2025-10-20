@@ -8,5 +8,5 @@ class GPMFCombiner
 {
 public:
     // Merge all results in chronological order (by creation_time_iso)
-    GPMFResult combineResults(const std::vector<GPMFResult> &results);
+    GPMFResult combineResults(const std::vector<GPMFResult> &results, std::string mp4filename);
 };
