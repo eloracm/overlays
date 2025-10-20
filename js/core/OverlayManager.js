@@ -108,7 +108,7 @@ export class OverlayManager {
         const gpxStart = this.gpxManager.getStartTimestampMs?.() ?? 0;
         const gpxEnd = this.gpxManager.getEndTimestampMs?.() ?? 0;
 
-        console.debug(`[OverlayManager] targeTime = ${formatted} (${targetMs}), GPX range=${gpxStart}–${gpxEnd}`);
+        console.debug(`[OverlayManager] targetTime = ${formatted} (${targetMs}), GPX range=${gpxStart}–${gpxEnd}`);
 
         const point = this.gpxManager.getInterpolatedPoint(targetMs);
         if (!point) {

@@ -1,7 +1,6 @@
 import { OverlayManager } from "./core/OverlayManager.js";
 import { VideoManager } from "./core/VideoManager.js";
 import { GPXManager } from "./core/GPXManager.js";
-import { computeTimeOffset } from "./utils/TimeUtils.js";
 
 window.addEventListener("DOMContentLoaded", async () => {
     window.DEBUG = true;
@@ -14,11 +13,11 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     // Load telemetry and video metadata
     const gpxManager = new GPXManager();
-    await gpxManager.load("data/GX010766_gpmf_gps.gpx");
+    await gpxManager.load("data/GX010766_combined_gpmf_gps.gpx");
 
     const videoElement = document.getElementById("video");
     const videoManager = new VideoManager(videoElement);
-    await videoManager.loadMetadata("data/GX010766_gpmf_meta.json");
+    await videoManager.loadMetadata("data/GX010766_combined_gpmf_meta.json");
 
     // 🔹 Compute and apply offset between video and GPX
     const videoStartMs = videoManager.creationTime.getTime();
