@@ -13,21 +13,25 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     // Load telemetry and video metadata
     const gpxManager = new GPXManager();
-    await gpxManager.load("data/GX010766_combined_gpmf_gps.gpx");
+    await gpxManager.load("data/2025-10-12 Cycling.gpx");
 
     const videoElement = document.getElementById("video");
     const videoManager = new VideoManager(videoElement);
-    await videoManager.loadMetadata("data/GX010766_combined_gpmf_meta.json");
+    await videoManager.loadMetadata("data/merged_gpmf_meta.json");
 
     // 🔹 Compute and apply offset between video and GPX
-    const videoStartMs = videoManager.creationTime.getTime();
-    const gpxStartMs = gpxManager.startMs;
     // gpxManager.videoToGpxOffsetMs = computeTimeOffset(videoStartMs, gpxStartMs);
     // gpxManager.videoToGpxOffsetMs = 63000;
-    gpxManager.videoToGpxOffsetMs = 500;
+    const videoDuration = videoManager.getDurationMs();
+    const gpxDuration = gpxManager.getDurationMs();
+    gpxManager.gpxStartOffsetMs = -8000;
+
+    const scale = (gpxDuration + gpxManager.gpxEndOffsetMs) / videoDuration;
+
+    gpxManager.setTimeScale(scale);
 
     console.log(
-        `[main] Computed videoToGpxOffsetMs = ${gpxManager.videoToGpxOffsetMs} ms`
+        `[main] Computed videoToGpxOffsetMs = ${gpxManager.gpxStartOffsetMs} ms`
     );
 
     // Initialize overlays

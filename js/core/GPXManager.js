@@ -5,7 +5,20 @@ export class GPXManager {
         this.points = [];
         this.startMs = 0;
         this.endMs = 0;
-        this.videoToGpxOffsetMs = 0;
+        this.gpxStartOffsetMs = 0;
+        this.gpxEndOffsetMs = 0;
+        this.timeScale = 1.0; // multiply video time by this when mapping
+    }
+
+
+    setTimeOffset(seconds) {
+        this.gpxStartOffsetMs = seconds * 1000;
+        console.debug(`[GPXManager] Time offset set to ${seconds}s`);
+    }
+
+    setTimeScale(scale) {
+        this.timeScale = scale;
+        console.debug(`[GPXManager] Time scale set to ${scale}`);
     }
 
     async load(gpxUrl) {
@@ -23,7 +36,18 @@ export class GPXManager {
             const ele = parseFloat(pt.querySelector('ele')?.textContent || 0);
             const timeStr = pt.querySelector('time')?.textContent;
             const time = new Date(timeStr).getTime();
-            return { lat, lon, ele, time };
+
+            // --- Heart rate (Garmin / Strava GPX extension) ---
+            // Look for <gpxtpx:hr> inside <extensions><gpxtpx:TrackPointExtension>
+            let hr = null;
+            const hrEl =
+                pt.querySelector('gpxtpx\\:hr') || // Normal namespace
+                pt.querySelector('hr');            // Fallback if namespace stripped
+            if (hrEl) {
+                const val = parseInt(hrEl.textContent);
+                if (!isNaN(val)) hr = val;
+            }
+            return { lat, lon, ele, time, hr };
         });
 
         if (this.points.length < 2) {
@@ -170,15 +194,85 @@ export class GPXManager {
                 });
                 console.groupEnd();
             }
-            // === Auto gauge range suggestion (95th percentile, but ensure we catch top bursts) ===
-            const sorted = [...smoothed].sort((a, b) => a - b);
-            const p98 = sorted[Math.floor(sorted.length * 0.98)]; // use 98th percentile
-            const maxVal = Math.max(p98, Math.max(...smoothed)); // cover small outliers
-            // round up to nearest 5 mph, with at least +2 mph of headroom
-            this.suggestedMaxMph = Math.max(20, Math.ceil((maxVal + 2) / 5) * 5);
-            console.debug(`[GPXManager] Suggested speedometer max: ${this.suggestedMaxMph} mph`);
-        }
+            // --- Robust speed statistics and suggested gauge max ---
+            // Robust suggested gauge max (replace previous computation)
+            const OUTLIER_SPEED_CAP_MPH = 40; // tuneable: 60-80 is good for most cycling
+            const MIN_GAUGE = 8;             // minimum gauge (mph) to keep dial usable
 
+            const speeds = this.points
+                .map(p => p.speedMph)
+                .filter(s => isFinite(s) && s > 0);
+
+            if (speeds.length === 0) {
+                this.suggestedMaxMph = 30;
+            } else {
+                // Filter out extreme spikes for statistics
+                const filtered = speeds.filter(s => s <= OUTLIER_SPEED_CAP_MPH);
+
+                // Simple median helper
+                function median(arr) {
+                    const a = arr.slice().sort((x, y) => x - y);
+                    const n = a.length;
+                    if (!n) return 0;
+                    return (n % 2) ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
+                }
+
+                // Percentile helper
+                function percentile(arr, p) {
+                    if (!arr.length) return 0;
+                    const a = arr.slice().sort((x, y) => x - y);
+                    const idx = (p / 100) * (a.length - 1);
+                    const lo = Math.floor(idx), hi = Math.ceil(idx);
+                    if (lo === hi) return a[lo];
+                    const t = idx - lo;
+                    return a[lo] * (1 - t) + a[hi] * t;
+                }
+
+                const med = median(filtered);
+                const p98 = percentile(filtered, 98);
+                const p99 = percentile(filtered, 99);
+
+                // Smoothed series for peak detection (use your existing smoothing helper)
+                const smoothed = this._smoothSeries(filtered, 5).filter(s => isFinite(s) && s > 0 && s <= OUTLIER_SPEED_CAP_MPH);
+                const rawSmoothedMax = smoothed.length ? Math.max(...smoothed) : 0;
+
+                // Candidate values from robust measures
+                const cand_p98 = p98 * 1.25;         // slight headroom over sustained near-peak
+                const cand_median = Math.max(p99 * 1.05, med * 2.0); // allow median*2 or tiny headroom over p99
+                const cand_p99_plus = p99 + 5.0;     // small absolute headroom over extreme-but-real values
+
+                // Decide whether to trust rawSmoothedMax:
+                // if rawSmoothedMax is more than 2x p99 it's likely outlier-affected; ignore it.
+                let includeRawSmoothed = (rawSmoothedMax > 0 && rawSmoothedMax <= p99 * 2.0);
+                let cand_raw = includeRawSmoothed ? rawSmoothedMax : 0;
+
+                // final candidate is the max of the robust candidates (and raw if allowed)
+                let candidate = Math.max(cand_p98, cand_median, cand_p99_plus, cand_raw);
+
+                // Guard against absurd tiny candidate; enforce a reasonable floor
+                candidate = Math.max(candidate, MIN_GAUGE);
+
+                // Round up to nearest 5 mph and give 2 mph headroom
+                let computed = Math.ceil((candidate + 2) / 5) * 5;
+
+                // Optional user-configurable cap — remove or set high if you don't want a hard cap
+                const USER_CAP = this.maxCapMph || 999; // default effectively no cap
+                computed = Math.min(computed, USER_CAP);
+
+                this.suggestedMaxMph = computed;
+
+                console.debug(`[GPXManager] Speed stats rawMax=${Math.max(...speeds).toFixed(1)} ` +
+                    `med=${med.toFixed(1)} p98=${p98.toFixed(1)} p99=${p99.toFixed(1)} ` +
+                    `rawSmoothedMax=${rawSmoothedMax.toFixed(1)} includeRaw=${includeRawSmoothed} ` +
+                    `candidate=${candidate.toFixed(2)} computed=${this.suggestedMaxMph}`);
+            }
+
+        }
+        console.debug(`[GPXManager] Suggested speedometer max: ${this.suggestedMaxMph} mph`);
+    }
+
+    getDurationMs() {
+        return this.endMs - this.startMs;
     }
 
     _smoothSeries(values, windowSize = 5) {
@@ -199,7 +293,7 @@ export class GPXManager {
 
     getInterpolatedPoint(videoAbsoluteMs) {
         if (!this.points.length) return null;
-        const targetMs = videoAbsoluteMs + (this.videoToGpxOffsetMs || 0);
+        const targetMs = videoAbsoluteMs + (this.gpxStartOffsetMs || 0);
 
         if (targetMs <= this.startMs) return this.points[0];
         if (targetMs >= this.endMs) return this.points[this.points.length - 1];
@@ -224,6 +318,7 @@ export class GPXManager {
             timeMs: targetMs,
             miles: p1.cumMiles + (p2.cumMiles - p1.cumMiles) * ratio,
             speedMph: p1.speedMph + (p2.speedMph - p1.speedMph) * ratio,
+            hr: p1.hr + (p2.hr - p1.hr) * ratio,
             idxLeft: left,
             idxRight: right,
             ratio,

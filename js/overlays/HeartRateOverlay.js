@@ -6,8 +6,8 @@ export class HeartRateOverlay {
         this.canvas.width = 3840;
         this.canvas.height = 2160;
         Object.assign(this.canvas.style, {
-            width: (opts.width || 200) + "px",
-            height: (opts.height || 200) + "px",
+            width: (opts.width || 100) + "px",
+            height: (opts.height || 100) + "px",
             position: "absolute",
             right: opts.right,
             left: opts.left,
@@ -23,17 +23,30 @@ export class HeartRateOverlay {
     }
 
     update(point) {
-        if (!point?.hr) return;
         const ctx = this.ctx;
-        const w = this.canvas.width, h = this.canvas.height;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
         ctx.clearRect(0, 0, w, h);
+
+        if (!point?.hr) return;
+
         ctx.save();
-        ctx.scale(4, 4); // adjust for 4K scale factor
-        ctx.fillStyle = "white";
-        ctx.font = "bold 28px sans-serif";
+        ctx.scale(4, 4); // 4K scale correction
+
+        // === Draw heart symbol ===
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(`${Math.round(point.hr)} bpm`, w / 8, h / 8);
+
+        ctx.font = "bold 280px 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif";
+        ctx.fillStyle = "red";
+        ctx.fillText("❤️", w / 8, h / 10);
+
+        // === Draw HR number below ===
+        ctx.font = "bold 128px sans-serif";
+        ctx.fillStyle = "white";
+        ctx.fillText(`${Math.round(point.hr)} bpm`, w / 8, h / 5);
+
         ctx.restore();
     }
 }
+

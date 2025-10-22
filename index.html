@@ -15,17 +15,17 @@
     <div id="appContainer">
         <div id="videoContainer">
             <video id="video" controls preload="metadata" width="1280" height="720">
-                <source src="./data/GX010766_gpmf2.mp4" type="video/mp4">
+                <source src="./data/merged.mp4" type="video/mp4">
             </video>
+            <div id="elevation" class="overlay elevation">
+                <canvas id="elevationCanvas" width="3840" height="2160"></canvas>
+            </div>
             <div id="videoTimeDisplay">--:--:--</div>
         </div>
 
         <div id="overlayRoot">
             <div id="mapStatic" class="overlay map-static"></div>
             <div id="mapDynamic" class="overlay map-dynamic"></div>
-            <div id="elevation" class="overlay elevation">
-                <canvas id="elevationCanvas" width="3840" height="2160"></canvas>
-            </div>
         </div>
     </div>
 

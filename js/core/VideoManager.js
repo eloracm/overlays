@@ -32,6 +32,9 @@ export class VideoManager {
         }
     }
 
+    getDurationMs() {
+        return this.frameTimes[this.frameTimes.length - 1];
+    }
 
     // VideoManager.js - getCurrentVideoTimestampMs
     getCurrentVideoTimestampMs() {

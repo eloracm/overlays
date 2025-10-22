@@ -5,6 +5,7 @@ import { HeartRateOverlay } from "../overlays/HeartRateOverlay.js";
 import { ElevationOverlay } from "../overlays/ElevationOverlay.js";
 import { MapStaticOverlay } from "../overlays/MapStaticOverlay.js";
 import { MapDynamicOverlay } from "../overlays/MapDynamicOverlay.js";
+import { formatTime } from "../utils/TimeUtils.js";
 
 export class OverlayManager {
     constructor(videoEl, overlayContainer, gpxManager, videoManager) {
@@ -15,6 +16,9 @@ export class OverlayManager {
         this.overlays = [];
         this.videoTimeDisplay = document.getElementById("videoTimeDisplay");
         this.lastDisplayedSecond = -1;
+        this.isPlaying = false;
+        this.rafId = null;
+        this.lastVideoTime = 0;
 
 
         // 🕓 When user scrubs or jumps in video
@@ -23,10 +27,10 @@ export class OverlayManager {
             this._updateOverlays();
         });
 
-        // 🔁 During playback, update overlays continuously
-        this.videoEl.addEventListener("timeupdate", () => {
-            this._updateOverlays();
-        });
+        videoEl.addEventListener("play", () => this.startAnimation());
+        videoEl.addEventListener("pause", () => this.stopAnimation());
+        videoEl.addEventListener("ended", () => this.stopAnimation());
+
         this._setupHiDPIScaling();
     }
 
@@ -64,7 +68,7 @@ export class OverlayManager {
 
 
         const heartRate = new HeartRateOverlay(this.overlayContainer, {
-            width: 200, height: 200,
+            width: 100, height: 100,
             right: "40px", top: "50%", transform: "translateY(-50%)"
         });
 
@@ -95,6 +99,34 @@ export class OverlayManager {
         // requestAnimationFrame(tick);
     }
 
+    startAnimation() {
+        if (this.isPlaying) return;
+        this.isPlaying = true;
+
+        const animate = () => {
+            if (!this.isPlaying) return;
+
+            const video = this.videoManager.video;
+            const timeMs = video.currentTime * 1000;
+
+            // Only update if time is advancing or we’re scrubbing
+            if (Math.abs(timeMs - this.lastVideoTime) > 0.1) {
+                this._updateOverlays();
+                this.lastVideoTime = timeMs;
+            }
+
+            this.rafId = requestAnimationFrame(animate);
+        };
+
+        this.rafId = requestAnimationFrame(animate);
+    }
+
+    stopAnimation() {
+        this.isPlaying = false;
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+    }
+
     _updateOverlays() {
         const targetMs = this.videoManager.getCurrentVideoTimestampMs();
 
@@ -105,8 +137,8 @@ export class OverlayManager {
         const formatted = this.videoManager.getVideoTimeFormatted();
 
         // Get first and last GPX timestamps for reference
-        const gpxStart = this.gpxManager.getStartTimestampMs?.() ?? 0;
-        const gpxEnd = this.gpxManager.getEndTimestampMs?.() ?? 0;
+        const gpxStart = this.gpxManager.startMs;
+        const gpxEnd = this.gpxManager.endMs;
 
         console.debug(`[OverlayManager] targetTime = ${formatted} (${targetMs}), GPX range=${gpxStart}–${gpxEnd}`);
 
@@ -114,12 +146,12 @@ export class OverlayManager {
         if (!point) {
             console.debug(`[OverlayManager] No telemetry point found for ${targetMs} ms`);
         } else {
-            console.debug(`[OverlayManager] Found telemetry point at ${point.timeMs || "unknown time"}`);
+            console.debug(`[OverlayManager] Found telemetry point at ${point.timeMs || "unknown time"} ${point.timeMs ? formatTime(new Date(point.timeMs)) : ''})`);
         }
 
         for (const overlay of this.overlays) {
             try {
-                console.debug(`[OverlayManager] Updating overlay ${overlay.constructor.name} at ${targetMs}`);
+                // console.debug(`[OverlayManager] Updating overlay ${overlay.constructor.name} at ${targetMs}`);
                 overlay.update(point, targetMs);
             } catch (err) {
                 console.warn(`[OverlayManager] ${overlay.constructor.name} failed:`, err);
