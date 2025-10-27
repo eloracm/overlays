@@ -1,18 +1,19 @@
 // js/core/OverlayManager.js
-import { setupHiDPI } from "../utils/HiDPIUtils.js";
 import { SpeedometerOverlay } from "../overlays/SpeedometerOverlay.js";
 import { HeartRateOverlay } from "../overlays/HeartRateOverlay.js";
 import { ElevationOverlay } from "../overlays/ElevationOverlay.js";
 import { MapStaticOverlay } from "../overlays/MapStaticOverlay.js";
 import { MapDynamicOverlay } from "../overlays/MapDynamicOverlay.js";
+import { SlopeOverlay } from "../overlays/SlopeOverlay.js";
 import { formatTime } from "../utils/TimeUtils.js";
 
 export class OverlayManager {
-    constructor(videoEl, overlayContainer, gpxManager, videoManager) {
-        this.videoEl = videoEl;
-        this.overlayContainer = overlayContainer;
+    constructor(gpxManager, overlayContainer, videoEl, videoManager, flyoverController) {
         this.gpxManager = gpxManager;
+        this.overlayContainer = overlayContainer;
+        this.videoElement = videoEl;
         this.videoManager = videoManager;
+        this.flyoverController = flyoverController;
         this.overlays = [];
         this.videoTimeDisplay = document.getElementById("videoTimeDisplay");
         this.lastDisplayedSecond = -1;
@@ -20,34 +21,34 @@ export class OverlayManager {
         this.rafId = null;
         this.lastVideoTime = 0;
 
+        if (videoEl) {
+            // 🕓 When user scrubs or jumps in video
+            this.videoElement.addEventListener("seeked", () => {
+                console.log("[Video] Seeked to", this.videoElement.currentTime);
+                this._updateOverlays();
+            });
+            videoEl.addEventListener("play", () => this.startAnimation());
+            videoEl.addEventListener("pause", () => this.stopAnimation());
+            videoEl.addEventListener("ended", () => this.stopAnimation());
+        }
 
-        // 🕓 When user scrubs or jumps in video
-        this.videoEl.addEventListener("seeked", () => {
-            console.log("[Video] Seeked to", this.videoEl.currentTime);
-            this._updateOverlays();
-        });
-
-        videoEl.addEventListener("play", () => this.startAnimation());
-        videoEl.addEventListener("pause", () => this.stopAnimation());
-        videoEl.addEventListener("ended", () => this.stopAnimation());
-
-        this._setupHiDPIScaling();
     }
 
-    /** Setup 4K internal rendering with scale-to-fit for 1280x720 output */
-    _setupHiDPIScaling() {
-        const displayW = 1280, displayH = 720;
-        const internalW = 3840, internalH = 2160;
-        Object.assign(this.overlayContainer.style, {
-            position: "relative",
-            width: `${displayW}px`,
-            height: `${displayH}px`,
-            overflow: "hidden",
-            background: "black"
-        });
-        this.overlayContainer.dataset.internalWidth = internalW;
-        this.overlayContainer.dataset.internalHeight = internalH;
+    getCurrentTime() {
+        if (this.videoElement) return this.videoElement.currentTime;
+        if (this.flyoverController) return this.flyoverController.currentTime;
+        return 0;
+    }
 
+    /**
+ * Return current GPX timestamp (in ms) from the appropriate source
+ */
+    getCurrentGPXTime() {
+        if (this.videoManager && typeof this.videoManager.getCurrentVideoTimestampMs === "function") {
+            return this.videoManager.getCurrentVideoTimestampMs();
+        }
+        if (this.flyoverController) return this.flyoverController.currentGPXTime;
+        return null;
     }
 
     /** Initialize overlays — static DOM ones + dynamic overlays */
@@ -72,7 +73,9 @@ export class OverlayManager {
             right: "40px", top: "50%", transform: "translateY(-50%)"
         });
 
-        this.overlays.push(staticMap, dynamicMap, elevation, speedometer, heartRate);
+        const slopeOverlay = new SlopeOverlay(this.overlayContainer, { left: "50px", bottom: "250px" }, this.gpxManager);
+
+        this.overlays.push(staticMap, dynamicMap, elevation, speedometer, heartRate, slopeOverlay);
         console.log(`[OverlayManager] Initialized ${this.overlays.length} overlays`);
     }
 
@@ -88,15 +91,6 @@ export class OverlayManager {
             });
         }
 
-        // if (!this.videoEl) return;
-        // const tick = () => {
-        //     if (!this.videoEl.paused && !this.videoEl.ended) {
-        //         const t = this.videoEl.currentTime;
-        //         this._updateOverlays(t);
-        //     }
-        //     requestAnimationFrame(tick);
-        // };
-        // requestAnimationFrame(tick);
     }
 
     startAnimation() {
@@ -128,13 +122,13 @@ export class OverlayManager {
     }
 
     _updateOverlays() {
-        const targetMs = this.videoManager.getCurrentVideoTimestampMs();
+        const targetMs = this.getCurrentGPXTime();
 
         if (!targetMs) {
             console.debug("[OverlayManager] No targetMs yet (videoManager returned null/0)");
             return;
         }
-        const formatted = this.videoManager.getVideoTimeFormatted();
+        const formatted = this.getCurrentTime();
 
         // Get first and last GPX timestamps for reference
         const gpxStart = this.gpxManager.startMs;
@@ -158,7 +152,7 @@ export class OverlayManager {
             }
         }
 
-        this.videoTimeDisplay.textContent = formatted;
+        // this.videoTimeDisplay.textContent = formatted;
     }
 
 }

@@ -1,24 +1,41 @@
 // js/overlays/HeartRateOverlay.js ❤️
+// Only import 'canvas' when running in Node
+let createCanvas = null;
+if (typeof window === "undefined") {
+    // Dynamically import at runtime so browser never sees it
+    const mod = await import("canvas");
+    createCanvas = mod.createCanvas;
+}
+
 export class HeartRateOverlay {
     constructor(parent, opts = {}) {
-        this.canvas = document.createElement("canvas");
-        this.canvas.classList.add("overlay-canvas", "heartrate");
-        this.canvas.width = 3840;
-        this.canvas.height = 2160;
-        Object.assign(this.canvas.style, {
-            width: (opts.width || 100) + "px",
-            height: (opts.height || 100) + "px",
-            position: "absolute",
-            right: opts.right,
-            left: opts.left,
-            top: opts.top,
-            transform: opts.transform,
-            background: "rgba(80,80,80,0.35)",
-            borderRadius: "12px",
-            pointerEvents: "none",
-            zIndex: 3
-        });
-        parent.appendChild(this.canvas);
+
+        const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+
+        if (isBrowser) {
+            // Browser: create real DOM canvas
+            this.canvas = document.createElement("canvas");
+            this.canvas.classList.add("overlay-canvas", "heartrate");
+            this.canvas.width = 3840;
+            this.canvas.height = 2160;
+            Object.assign(this.canvas.style, {
+                width: (opts.width || 100) + "px",
+                height: (opts.height || 100) + "px",
+                position: "absolute",
+                right: opts.right,
+                left: opts.left,
+                top: opts.top,
+                transform: opts.transform,
+                background: "rgba(80,80,80,0.35)",
+                borderRadius: "12px",
+                pointerEvents: "none",
+                zIndex: 3
+            });
+            parent.appendChild(this.canvas);
+        } else {
+            // Node: use node-canvas
+            this.canvas = createCanvas(3840, 2160);
+        }
         this.ctx = this.canvas.getContext("2d");
     }
 
@@ -37,9 +54,14 @@ export class HeartRateOverlay {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
+        ctx.save();
+        ctx.scale(1.3, 1.0);  // ✅ makes the heart 30% wider, no vertical change
         ctx.font = "bold 280px 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif";
         ctx.fillStyle = "red";
-        ctx.fillText("❤️", w / 8, h / 10);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("❤️", (w / 8) / 1.3, h / 10); // compensate for scale
+        ctx.restore();
 
         // === Draw HR number below ===
         ctx.font = "bold 128px sans-serif";

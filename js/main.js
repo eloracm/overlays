@@ -13,11 +13,11 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     // Load telemetry and video metadata
     const gpxManager = new GPXManager();
-    await gpxManager.load("data/2025-10-12 Cycling.gpx");
+    await gpxManager.load("data/2025-10-26_wahoo.gpx");
 
     const videoElement = document.getElementById("video");
     const videoManager = new VideoManager(videoElement);
-    await videoManager.loadMetadata("data/merged_gpmf_meta.json");
+    await videoManager.loadMetadata("data/2025-10-26_gpmf.json");
 
     // 🔹 Compute and apply offset between video and GPX
     // gpxManager.videoToGpxOffsetMs = computeTimeOffset(videoStartMs, gpxStartMs);

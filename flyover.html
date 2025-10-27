@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Ride Flyover</title>
+    <link rel="stylesheet" href="flyover.css" />
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?">
+
+    <!-- Leaflet for map overlays -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- ✅ Mapbox CSS -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css" rel="stylesheet" />
+
+    <!-- ✅ Load Mapbox GL JS before module -->
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js"></script>
+
+</head>
+
+<body>
+    <div id="map">
+        <div id="overlayRoot">
+            <div id="mapStatic" class="overlay map-static"></div>
+            <div id="mapDynamic" class="overlay map-dynamic"></div>
+            <div id="elevation" class="overlay elevation">
+                <canvas id="elevationCanvas" width="1280" height="720"></canvas>
+            </div>
+            <div id="gpxTimeDisplay">--:--:--</div>
+        </div>
+    </div>
+    <div id="controls">
+        <button id="playBtn">▶ Play Flyover</button>
+    </div>
+    <!-- ✅ Run your module only *after* the window 'load' event fires -->
+    <script>
+        window.addEventListener("load", () => {
+            // Guarantee Mapbox is globally available before importing your module
+            if (typeof mapboxgl === "undefined") {
+                console.error("Mapbox failed to load!");
+            } else {
+                window.mapboxgl = mapboxgl;
+                import("./js/flyover.js").catch(err => console.error("Failed to import flyover.js:", err));
+            }
+        });
+    </script>
+</body>
+
+</html>

@@ -1,3 +1,19 @@
+// GPXManager.js (top)
+let DOMParserImpl;
+let fsPromises = null;
+
+// Detect Node vs Browser
+const isNode = typeof window === "undefined";
+
+if (isNode) {
+    const xmldom = await import("@xmldom/xmldom");
+    DOMParserImpl = xmldom.DOMParser;
+    fsPromises = await import("fs/promises");
+} else {
+    DOMParserImpl = DOMParser;
+}
+
+
 import { haversineDistanceMiles } from '../utils/GeoUtils.js'; // we'll define this helper below
 
 export class GPXManager {
@@ -23,30 +39,32 @@ export class GPXManager {
 
     async load(gpxUrl) {
         console.debug('[GPXManager] Loading GPX:', gpxUrl);
-        const response = await fetch(gpxUrl);
-        const text = await response.text();
+        let text;
+        if (isNode && !/^https?:/i.test(gpxUrl)) {
+            // Local file read in Node
+            text = await fsPromises.readFile(gpxUrl, "utf8");
+        } else {
+            // Browser fetch
+            const response = await fetch(gpxUrl);
+            text = await response.text();
+        }
 
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, 'application/xml');
-        const trkpts = [...xml.getElementsByTagName('trkpt')];
+        const parser = new DOMParserImpl();
+        const xmlDoc = parser.parseFromString(text, 'application/xml');
+        const trkptNodes = xmlDoc.getElementsByTagName('trkpt');
+        const trkpts = Array.from(trkptNodes);
 
         this.points = trkpts.map(pt => {
             const lat = parseFloat(pt.getAttribute('lat'));
             const lon = parseFloat(pt.getAttribute('lon'));
-            const ele = parseFloat(pt.querySelector('ele')?.textContent || 0);
-            const timeStr = pt.querySelector('time')?.textContent;
+            const ele = parseFloat(pt.getElementsByTagName('ele')[0]?.textContent || 0);
+            const timeStr = pt.getElementsByTagName('time')[0]?.textContent;
             const time = new Date(timeStr).getTime();
 
             // --- Heart rate (Garmin / Strava GPX extension) ---
             // Look for <gpxtpx:hr> inside <extensions><gpxtpx:TrackPointExtension>
-            let hr = null;
-            const hrEl =
-                pt.querySelector('gpxtpx\\:hr') || // Normal namespace
-                pt.querySelector('hr');            // Fallback if namespace stripped
-            if (hrEl) {
-                const val = parseInt(hrEl.textContent);
-                if (!isNaN(val)) hr = val;
-            }
+            const hrNode = pt.getElementsByTagName('gpxtpx:hr')[0];
+            const hr = hrNode ? parseInt(hrNode.textContent) : null;
             return { lat, lon, ele, time, hr };
         });
 

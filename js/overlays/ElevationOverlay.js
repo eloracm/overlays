@@ -1,25 +1,47 @@
+
+// Only import 'canvas' when running in Node
+let createCanvas = null;
+if (typeof window === "undefined") {
+    // Dynamically import at runtime so browser never sees it
+    const mod = await import("canvas");
+    createCanvas = mod.createCanvas;
+}
+
 export class ElevationOverlay {
     constructor(canvasId, gpxManager) {
-        this.canvas = document.getElementById(canvasId);
+
+        // Detect environment: browser or Node
+        const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+
+        if (isBrowser) {
+            // Normal browser usage
+            this.canvas = document.getElementById(canvasId);
+        } else {
+            // Headless Node rendering
+            this.canvas = createCanvas(3840, 2160);
+        }
+
         this.ctx = this.canvas.getContext("2d");
         this.gpx = gpxManager;
 
         // Internal 4K resolution, scaled display
         this.canvas.width = 3840;
         this.canvas.height = 2160;
-        this.canvas.style.width = "1200px";
-        this.canvas.style.height = "180px";
 
-        // Scale context for drawing in visible coordinates
-        const scaleX = this.canvas.width / parseInt(this.canvas.style.width);
-        const scaleY = this.canvas.height / parseInt(this.canvas.style.height);
-        this.ctx.scale(scaleX, scaleY);
+        if (isBrowser) {
+            this.canvas.style.width = "1200px";
+            this.canvas.style.height = "180px";
+            // Scale context for drawing in visible coordinates
+            const scaleX = this.canvas.width / parseInt(this.canvas.style.width);
+            const scaleY = this.canvas.height / parseInt(this.canvas.style.height);
+            this.ctx.scale(scaleX, scaleY);
+        }
     }
 
     update(currentPoint, currentTargetTimeMs) {
         const ctx = this.ctx;
-        const visibleW = parseInt(this.canvas.style.width);
-        const visibleH = parseInt(this.canvas.style.height);
+        const visibleW = 1200 /*parseInt(this.canvas.style.width) */;
+        const visibleH = 180 /* parseInt(this.canvas.style.height) */;
         const points = this.gpx.points;
         if (!points || points.length < 2) return;
 
@@ -60,10 +82,10 @@ export class ElevationOverlay {
             const distM = (p1.cumMiles - p0.cumMiles) * 1609.34;
             const elevDelta = p1.ele - p0.ele;
             const slope = distM > 0 ? (elevDelta / distM) * 100 : 0;
-            let color = "#ffff66";
-            if (slope < -3) color = "#00ff88";
-            else if (slope < 1) color = "#ffff66";
-            else if (slope < 5) color = "#ff9933";
+            let color = "#ffffff";
+            if (slope < -.5) color = "#00ff88";
+            else if (slope < .5) color = "#ffffff";
+            else if (slope < 3) color = "#ff9933";
             else color = "#ff3333";
             const x1 = gxL + (p0.cumMiles / totalMilesSafe) * (gxR - gxL);
             const y1 = gxB - ((p0.ele * 3.28084 - minEleFt) / eleRange) * graphH;
@@ -139,57 +161,42 @@ export class ElevationOverlay {
             ctx.fillText(eleFt, gxL - 8, y + 3);
         }
 
-        // // === current marker ===
-        // if (currentPoint) {
-        //     const markerX = gxL + (currentPoint.miles / totalMilesSafe) * (gxR - gxL);
-        //     const markerY = gxB - ((currentPoint.ele * 3.28084 - minEleFt) / eleRange) * graphH;
-        //     ctx.beginPath();
-        //     ctx.arc(markerX, markerY, 5, 0, Math.PI * 2);
-        //     ctx.fillStyle = "red";
-        //     ctx.fill();
-        //     // === current marker and slope ===
-        //     ctx.beginPath();
-        //     ctx.arc(markerX, markerY, 5, 0, Math.PI * 2);
-        //     ctx.fillStyle = "red";
-        //     ctx.fill();
-
-        //     // --- compute slope over recent 10m (~30ft) segment ---
-        //     let slopePct = 0;
-        //     if (points.length > 2) {
-        //         const idx = points.indexOf(currentPoint);
-        //         if (idx > 1) {
-        //             // look ~5 points back for smoother slope
-        //             const prev = points[Math.max(0, idx - 5)];
-        //             const dxM = (currentPoint.cumMiles - prev.cumMiles) * 1609.34;
-        //             const dyM = (currentPoint.ele - prev.ele);
-        //             slopePct = dxM > 0 ? (dyM / dxM) * 100 : 0;
-        //         }
-        //     }
-
-        //     const slopeStr = slopePct.toFixed(1);
-        //     const elevStr = `${Math.round(currentPoint.ele * 3.28084)} ft`;
-        //     const label = `${elevStr}  (${slopeStr}% grade)`;
-
-        //     ctx.font = "bold 13px sans-serif";
-        //     ctx.textAlign = "center";
-        //     ctx.fillStyle = "white";
-        //     ctx.fillText(label, markerX, markerY - 10);
-
-        // }
         // === current marker with slope visuals ===
         if (currentPoint) {
-            const markerX = gxL + (currentPoint.miles / totalMilesSafe) * (gxR - gxL);
+            const markerX = gxL + (currentPoint.cumMiles || currentPoint.miles / totalMilesSafe) * (gxR - gxL);
             const markerY = gxB - ((currentPoint.ele * 3.28084 - minEleFt) / eleRange) * graphH;
 
-            // Compute slope %
-            const idx = this.gpx.points.indexOf(currentPoint);
-            let slope = 0;
-            if (idx > 0) {
-                const prev = this.gpx.points[idx - 1];
-                const distM = (currentPoint.cumMiles - prev.cumMiles) * 1609.34;
-                const elevDelta = currentPoint.ele - prev.ele;
-                slope = distM > 0 ? (elevDelta / distM) * 100 : 0;
-            }
+            // // Compute slope %
+            // let idx = 0;
+            // let minDiff = Infinity;
+            // for (let i = 0; i < this.gpx.points.length; i++) {
+            //     const diff = Math.abs(this.gpx.points[i].time - currentPoint.timeMs);
+            //     if (diff < minDiff) {
+            //         minDiff = diff;
+            //         idx = i;
+            //     }
+            // }
+
+            // // --- Smooth slope computation ---
+            // const windowSize = 8; // use ±8 samples (~4s) for slope window
+            // let slope = 0;
+
+            // if (this.gpx.points.length > windowSize * 2) {
+            //     let startIdx = Math.max(0, idx - windowSize);
+            //     let endIdx = Math.min(this.gpx.points.length - 1, idx + windowSize);
+            //     const p0 = this.gpx.points[startIdx];
+            //     const p1 = this.gpx.points[endIdx];
+            //     const distM = (p1.cumMiles - p0.cumMiles) * 1609.34;
+            //     const elevDelta = p1.ele - p0.ele;
+            //     slope = distM > 0 ? (elevDelta / distM) * 100 : 0;
+            // }
+
+            // // --- Apply exponential smoothing ---
+            // this.prevSlope = this.prevSlope ?? slope;
+            // const alpha = 0.15; // smaller = smoother
+            // slope = this.prevSlope = this.prevSlope * (1 - alpha) + slope * alpha;
+            // this.displaySlope = this.displaySlope ?? slope;
+            // this.displaySlope += (slope - this.displaySlope) * 0.2; // 20% easing per frame
 
             // --- Marker circle ---
             ctx.beginPath();
@@ -201,46 +208,29 @@ export class ElevationOverlay {
             ctx.font = "bold 12px sans-serif";
             ctx.textAlign = "center";
             ctx.fillStyle = "white";
-            ctx.fillText(`${Math.round(currentPoint.ele * 3.28084)} ft`, markerX, markerY - 12);
+            ctx.fillText(`${Math.round(currentPoint.ele * 3.28084)} ft, `, markerX, markerY - 12);
 
-            // ========== OPTION 1: Tilted Arrow Indicator ==========
-            const len = 18;
-            const angle = (-slope / 20) * Math.PI / 4; // ±20% slope → ±45° tilt
-            ctx.save();
-            ctx.translate(markerX + 28, markerY - 6);
-            ctx.rotate(angle);
-            ctx.beginPath();
-            ctx.moveTo(-len / 2, 0);
-            ctx.lineTo(len / 2, 0);
-            ctx.lineTo(len / 2 - 5, -5);
-            ctx.moveTo(len / 2, 0);
-            ctx.lineTo(len / 2 - 5, 5);
-            ctx.strokeStyle = slope >= 0 ? "#ff6633" : "#33cc33";
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.restore();
+            // // --- Slope color gradient ---
+            // const grad = ctx.createLinearGradient(markerX - 20, markerY, markerX + 20, markerY);
+            // if (slope < 0) {
+            //     grad.addColorStop(0, "#00ff00"); // green downhill
+            //     grad.addColorStop(1, "#aaffaa");
+            // } else if (slope < 3) {
+            //     grad.addColorStop(0, "#ffffff");
+            //     grad.addColorStop(1, "#ffffff");
+            // } else {
+            //     grad.addColorStop(0, "#ff3300"); // red uphill
+            //     grad.addColorStop(1, "#ff9999");
+            // }
+            // // Draw slope value separately, slightly right of the elevation text
+            // ctx.fillStyle = grad;
+            // ctx.fillText(`${this.displaySlope.toFixed(1)}%`, markerX + 40, markerY - 12);
+            // // ctx.fillText(`${Math.round(currentPoint.ele * 3.28084)} ft, ${slope.toFixed(1)}%`, markerX, markerY - 12);
 
-            // ========== OPTION 2: Horizontal Bar Indicator ==========
-            const barW = 20, barH = 4;
-            const maxSlope = 15; // limit for full scale
-            const normalized = Math.max(-1, Math.min(1, slope / maxSlope));
-            const barX = markerX + 60;
-            const barY = markerY - 4;
-
-            ctx.fillStyle = "rgba(255,255,255,0.2)";
-            ctx.fillRect(barX - barW / 2, barY, barW, barH);
-            ctx.fillStyle = slope >= 0 ? "#ff6633" : "#33cc33";
-
-            if (normalized >= 0) {
-                ctx.fillRect(barX, barY, barW * normalized / 2, barH);
-            } else {
-                ctx.fillRect(barX + barW * normalized / 2, barY, barW * (-normalized / 2), barH);
-            }
-
-            // Optional: text for debug
+            // // Optional: text for debug
             // ctx.fillStyle = "#fff";
             // ctx.font = "10px sans-serif";
-            // ctx.fillText(`${slope.toFixed(1)}%`, barX + 30, barY + 10);
+            // // ctx.fillText(`${slope.toFixed(1)}%`, markerX + 30, markerY + 10);
         }
 
     }

@@ -84,6 +84,10 @@ export class MapStaticOverlay {
             return;
         }
 
+        // Move marker
+        const { lat, lon } = currentPoint;
+        if (lat && lon) this.currentMarker.setLatLng([lat, lon]);
+
         // If we're past the end, draw full blue route
         if (timeMs >= endMs) {
             this.routeTraveled.setLatLngs(pts.map(p => [p.lat, p.lon]));
@@ -101,8 +105,20 @@ export class MapStaticOverlay {
         const traveledCoords = pts.slice(0, idx + 1).map(p => [p.lat, p.lon]);
         this.routeTraveled.setLatLngs(traveledCoords);
 
-        // Move marker
-        const { lat, lon } = currentPoint;
-        if (lat && lon) this.currentMarker.setLatLng([lat, lon]);
+        // Inside update(currentPoint)
+        const tailMiles = 1.5;
+        const tailPts = [];
+        for (let i = idx; i >= 0; i--) {
+            if (pts[idx].cumMiles - pts[i].cumMiles > tailMiles) break;
+            tailPts.unshift(pts[i]);
+        }
+
+        if (this.tailLayer) this.map.removeLayer(this.tailLayer);
+        this.tailLayer = L.polyline(tailPts.map(p => [p.lat, p.lon]), {
+            color: "#542df2ff",
+            weight: 6,
+            opacity: 0.5,
+            interactive: false,
+        }).addTo(this.map);
     }
 }
